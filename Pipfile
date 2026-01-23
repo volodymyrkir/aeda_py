@@ -7,6 +7,9 @@ name = "pypi"
 pandas = "*"
 pyarrow = "*"
 pandas-stubs = "~=2.3.3"
+scikit-learn = "*"
+shap = "*"
+torch = "*"
 
 [dev-packages]
 
