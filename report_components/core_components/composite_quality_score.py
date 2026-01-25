@@ -22,9 +22,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from enum import Enum
-import warnings
 
-from scipy import stats
 from scipy.stats import entropy, spearmanr
 from scipy.spatial.distance import pdist, squareform
 
@@ -140,9 +138,10 @@ class CompositeQualityScoreComponent(ReportComponent):
         n_bootstrap: int = 100,
         custom_weights: Optional[Dict[str, float]] = None,
         target_column: Optional[str] = None,
-        severity_thresholds: Optional[Dict[str, float]] = None
+        severity_thresholds: Optional[Dict[str, float]] = None,
+        use_llm_explanations: bool = True  # Enable LLM-powered explanations
     ):
-        super().__init__(context)
+        super().__init__(context, use_llm_explanations)
         self.n_bootstrap = n_bootstrap
         self.custom_weights = custom_weights
         self.target_column = target_column

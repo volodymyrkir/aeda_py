@@ -8,16 +8,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 
 from report_components.base_component import ReportComponent, AnalysisContext
+from utils.consts import NUM_EXAMPLES_LLM
 
 
 class OutlierDetectionComponent(ReportComponent):
-    """
-    Learning-based multivariate outlier detection with configurable parameters,
-    local explanations, and optional AI-enhanced narratives.
-    Supports missing value handling and advanced interpretability via SHAP.
-    Intelligently skips high-cardinality numeric columns to avoid false positives.
-    """
-
     def __init__(
             self,
             context: AnalysisContext,
@@ -29,10 +23,11 @@ class OutlierDetectionComponent(ReportComponent):
             use_shap: bool = True,
             random_state: int = 42,
             skip_high_cardinality: bool = True,
-            cardinality_threshold: float = 0.85,  # Skip if unique_ratio > this (e.g., IDs)
-            min_unique_for_id_heuristic: int = 50  # Avoid skipping low-unique columns
+            cardinality_threshold: float = 0.85,
+            min_unique_for_id_heuristic: int = 50,
+            use_llm_explanations: bool = True
     ):
-        super().__init__(context)
+        super().__init__(context, use_llm_explanations)
         self.n_estimators = n_estimators
         self.contamination = contamination
         self.threshold_percentile = threshold_percentile
@@ -43,6 +38,7 @@ class OutlierDetectionComponent(ReportComponent):
         self.skip_high_cardinality = skip_high_cardinality
         self.cardinality_threshold = cardinality_threshold
         self.min_unique_for_id_heuristic = min_unique_for_id_heuristic
+        self.llm_explanations = []
 
     def analyze(self):
         df = self.context.dataset.df
@@ -139,6 +135,7 @@ class OutlierDetectionComponent(ReportComponent):
             mask: np.ndarray,
             feature_names: List[str]
     ) -> List[Dict[str, Any]]:
+        df = self.context.dataset.df
         outlier_indices = np.where(mask)[0]
         explanations = []
 
@@ -165,12 +162,31 @@ class OutlierDetectionComponent(ReportComponent):
                 scores[idx], feature_contributions, feature_names
             )
 
-            explanations.append({
+            explanation_entry = {
                 "row_index": int(idx),
                 "outlier_score": round(float(scores[idx]), 5),
                 "top_contributing_features": feature_contributions,
                 "explanation_narrative": narrative
-            })
+            }
+
+            if i < NUM_EXAMPLES_LLM and self.llm:
+                try:
+                    row_data = df.iloc[idx].to_dict()
+                    llm_explanation = self.llm.explain_outlier(
+                        row_data=row_data,
+                        outlier_score=scores[idx],
+                        contributing_features=feature_contributions,
+                        dataset_context=f"Dataset has {len(df)} rows"
+                    )
+                    explanation_entry["llm_explanation"] = llm_explanation
+                    self.llm_explanations.append({
+                        "row_index": int(idx),
+                        "explanation": llm_explanation
+                    })
+                except Exception:
+                    pass
+
+            explanations.append(explanation_entry)
 
         return explanations
 
@@ -181,29 +197,63 @@ class OutlierDetectionComponent(ReportComponent):
             feature_names: List[str]
     ) -> str:
         top_features = list(contributions.keys())
-        narrative = f"This record has an anomaly score of {score:.5f}, indicating deviation from the data distribution. "
-        narrative += "Key contributors include: "
-        narrative += ", ".join([f"{feat} (deviation {contributions[feat]:.4f})" for feat in top_features])
-        narrative += ". This suggests potential issues like measurement errors or rare events in these dimensions."
+        narrative = f"Anomaly score: {score:.5f}. Key contributors: "
+        narrative += ", ".join([f"{feat} ({contributions[feat]:.4f})" for feat in top_features])
         return narrative
 
     def summarize(self) -> dict:
         if self.result is None:
             raise RuntimeError("analyze() must be called before summarize()")
-        return {
+
+        example_outliers = []
+        for outlier in self.result["outliers"][:3]:
+            clean_outlier = {k: v for k, v in outlier.items() if k != 'llm_explanation'}
+            example_outliers.append(clean_outlier)
+
+        summary = {
             "outlier_ratio": self.result["summary"]["outlier_ratio"],
-            "example_outliers": self.result["outliers"][:3],
+            "example_outliers": example_outliers,
             "model_params": self.result["summary"]["model_params"],
             "skipped_columns": self.result["summary"]["skipped_high_cardinality_columns"]
         }
 
+        return summary
+
+    def get_full_summary(self) -> str:
+        if self.result is None:
+            raise RuntimeError("analyze() must be called before get_full_summary()")
+
+        lines = []
+
+        if self.llm_explanations:
+            lines.append(f"\n{'='*80}")
+            lines.append("🤖 LLM EXAMPLE EXPLANATIONS")
+            lines.append(f"{'='*80}")
+            for i, expl in enumerate(self.llm_explanations, 1):
+                lines.append(f"\n{i}. Row {expl['row_index']}")
+                lines.append(f"   {expl['explanation']}")
+            lines.append("")
+
+        if self.llm:
+            try:
+                summary_data = self.summarize()
+                component_summary = self.llm.generate_component_summary(
+                    component_name="Outlier Detection",
+                    metrics={"outlier_ratio": summary_data["outlier_ratio"], "num_outliers": len(self.result["outliers"])},
+                    findings=f"Found {len(self.result['outliers'])} outliers ({summary_data['outlier_ratio']:.1%} of data)"
+                )
+                lines.append(f"{'='*80}")
+                lines.append("📋 COMPONENT SUMMARY")
+                lines.append(f"{'='*80}")
+                lines.append(component_summary)
+                lines.append(f"{'='*80}\n")
+            except Exception:
+                pass
+
+        return "\n".join(lines)
+
     def justify(self) -> str:
-        method = "SHAP values" if self.use_shap else "feature deviations from the mean"
         return (
-                "This component employs Isolation Forest, an unsupervised ensemble method that isolates anomalies via random partitioning, "
-                "capturing complex multivariate interactions and non-linear density structures. It enhances autonomy by handling missing values, "
-                "skipping high-cardinality columns to prevent false positives, and providing configurable parameters for flexibility. "
-                "Local explanations use " + method + " to quantify feature contributions, "
-                "with AI-generated narratives for interpretable insights. This approach outperforms heuristic methods in detecting subtle outliers, "
-                "making it suitable for professional dataset analysis in research contexts."
+            "Isolation Forest-based multivariate outlier detection with SHAP explanations. "
+            "Handles missing values and filters high-cardinality columns."
         )

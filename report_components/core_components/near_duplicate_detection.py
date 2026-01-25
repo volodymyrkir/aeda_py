@@ -30,7 +30,7 @@ import pandas as pd
 from collections import defaultdict
 
 from report_components.base_component import ReportComponent, AnalysisContext
-
+from utils.consts import NUM_EXAMPLES_LLM
 
 # Risk thresholds for near-duplicate detection
 LOW_NEAR_DUPLICATE_RATIO = 0.005
@@ -247,9 +247,10 @@ class NearDuplicateDetectionComponent(ReportComponent):
         ngram_size: int = 3,
         max_pairs_to_report: int = 100,
         cluster_similar_records: bool = True,
-        random_state: int = 42
+        random_state: int = 42,
+        use_llm_explanations: bool = True  # Enable LLM-powered explanations
     ):
-        super().__init__(context)
+        super().__init__(context, use_llm_explanations)
         self.similarity_threshold = similarity_threshold
         self.num_perm = num_perm
         self.num_bands = num_bands
@@ -261,6 +262,7 @@ class NearDuplicateDetectionComponent(ReportComponent):
         self.max_pairs_to_report = max_pairs_to_report
         self.cluster_similar_records = cluster_similar_records
         self.random_state = random_state
+        self.llm_explanations = []
 
         self._minhasher: Optional[MinHasher] = None
         self._lsh_index: Optional[LSHIndex] = None
@@ -348,7 +350,8 @@ class NearDuplicateDetectionComponent(ReportComponent):
                 "detection_methods": result.detection_methods_used,
                 "similarity_threshold": self.similarity_threshold
             },
-            "pairs": [self._pair_to_dict(p) for p in result.pairs],
+            "pairs": [self._pair_to_dict(p, generate_llm=(i < NUM_EXAMPLES_LLM and self.llm is not None))
+                      for i, p in enumerate(result.pairs)],
             "clusters": [self._cluster_to_dict(c) for c in clusters],
             "column_contribution": column_contribution,
             "impact": self._assess_impact(near_duplicate_ratio, len(pairs), len(clusters))
@@ -714,9 +717,8 @@ class NearDuplicateDetectionComponent(ReportComponent):
             methods.append("dense_embeddings")
         return methods
 
-    def _pair_to_dict(self, pair: NearDuplicatePair) -> Dict[str, Any]:
-        """Convert NearDuplicatePair to dictionary."""
-        return {
+    def _pair_to_dict(self, pair: NearDuplicatePair, generate_llm: bool = False) -> Dict[str, Any]:
+        result = {
             "index_a": pair.index_a,
             "index_b": pair.index_b,
             "similarity": pair.similarity,
@@ -724,6 +726,28 @@ class NearDuplicateDetectionComponent(ReportComponent):
             "differing_columns": pair.differing_columns,
             "detection_method": pair.detection_method
         }
+
+        if generate_llm and self.llm:
+            try:
+                df = self.context.dataset.df
+                row_a = df.iloc[pair.index_a].to_dict()
+                row_b = df.iloc[pair.index_b].to_dict()
+                llm_explanation = self.llm.explain_near_duplicate(
+                    row_a=row_a,
+                    row_b=row_b,
+                    similarity_score=pair.similarity,
+                    matching_columns=pair.matching_columns,
+                    differing_columns=pair.differing_columns
+                )
+                result["llm_explanation"] = llm_explanation
+                self.llm_explanations.append({
+                    "pair": f"{pair.index_a}-{pair.index_b}",
+                    "explanation": llm_explanation
+                })
+            except Exception:
+                pass
+
+        return result
 
     def _cluster_to_dict(self, cluster: NearDuplicateCluster) -> Dict[str, Any]:
         """Convert NearDuplicateCluster to dictionary."""
@@ -752,11 +776,10 @@ class NearDuplicateDetectionComponent(ReportComponent):
         }
 
     def summarize(self) -> dict:
-        """Return a concise summary of the analysis."""
         if self.result is None:
             raise RuntimeError("analyze() must be called before summarize()")
 
-        return {
+        summary = {
             "near_duplicate_ratio": self.result["summary"]["near_duplicate_ratio"],
             "affected_rows": self.result["summary"]["affected_rows"],
             "total_pairs": self.result["summary"]["total_pairs"],
@@ -771,16 +794,19 @@ class NearDuplicateDetectionComponent(ReportComponent):
             )
         }
 
+        if self.llm_explanations:
+            print(f"\n{'='*80}")
+            print("🤖 LLM EXPLANATIONS")
+            print(f"{'='*80}")
+            for i, expl in enumerate(self.llm_explanations, 1):
+                print(f"\n{i}. Pair {expl['pair']}")
+                print(f"   {expl['explanation']}")
+            print(f"{'='*80}\n")
+
+        return summary
+
     def justify(self) -> str:
-        """Provide justification for this component's inclusion."""
         return (
-            "Near-duplicate detection is essential for ensuring data integrity and preventing "
-            "subtle forms of data leakage that exact duplicate detection cannot catch. Records "
-            "that are highly similar but not identical often arise from data entry variations, "
-            "record linkage issues, or ETL artifacts. This component uses MinHash Locality "
-            "Sensitive Hashing (LSH) for efficient O(n) candidate generation, followed by "
-            "detailed similarity verification using weighted column comparisons and character "
-            "n-gram Jaccard similarity. The clustering of near-duplicates provides actionable "
-            "insights for deduplication pipelines and helps prevent train/test contamination "
-            "that could lead to overly optimistic model evaluation metrics."
+            "MinHash LSH-based near-duplicate detection with efficient candidate generation. "
+            "Identifies similar but non-identical records from data entry variations or ETL issues."
         )

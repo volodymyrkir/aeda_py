@@ -1,4 +1,3 @@
-from collections import Counter
 from typing import Dict, Any, List
 
 import numpy as np
@@ -6,24 +5,22 @@ import pandas as pd
 from scipy.stats import chi2_contingency
 
 from report_components.base_component import ReportComponent, AnalysisContext
+from utils.consts import NUM_EXAMPLES_LLM
 
 class CategoricalOutlierDetectionComponent(ReportComponent):
-    """
-    Enhanced frequency and distribution-based outlier detection for categorical features.
-    Intelligently skips high-cardinality (ID-like) columns, adapts thresholds, and provides AI-narrated explanations.
-    """
     def __init__(
         self,
         context: AnalysisContext,
         min_frequency_threshold: float = 0.01,
-        adaptive_threshold: bool = True,  # Dynamically adjust threshold
+        adaptive_threshold: bool = True,
         skip_high_cardinality: bool = True,
-        cardinality_threshold: float = 0.8,  # Skip if unique_ratio > this
+        cardinality_threshold: float = 0.8,
         max_explanations_per_col: int = 5,
         use_chi_square: bool = False,
-        min_null_ratio_to_warn: float = 0.5  # Flag high nulls separately
+        min_null_ratio_to_warn: float = 0.5,
+        use_llm_explanations: bool = True
     ):
-        super().__init__(context)
+        super().__init__(context, use_llm_explanations)
         self.min_frequency_threshold = min_frequency_threshold
         self.adaptive_threshold = adaptive_threshold
         self.skip_high_cardinality = skip_high_cardinality
@@ -31,6 +28,7 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
         self.max_explanations_per_col = max_explanations_per_col
         self.use_chi_square = use_chi_square
         self.min_null_ratio_to_warn = min_null_ratio_to_warn
+        self.llm_explanations = []
 
     def analyze(self):
         df = self.context.dataset.df
@@ -42,13 +40,14 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
             list(df.select_dtypes(include=['object', 'category']).columns)
         )
         if not cat_cols:
-            return  # Or raise if mandatory
+            return
 
         n_rows = len(df)
         outlier_masks = {}
         explanations = []
         skipped_cols = []
         high_null_cols = []
+        llm_count = 0
 
         for col in cat_cols:
             non_null = df[col].dropna()
@@ -66,7 +65,6 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
                 skipped_cols.append({"column": col, "unique_ratio": round(unique_ratio, 4)})
                 continue
 
-            # Adaptive threshold: min( user_threshold, max(0.001, 5 / len(non_null)) )
             threshold = self.min_frequency_threshold
             if self.adaptive_threshold:
                 adaptive_min = max(0.001, 5 / len(non_null))
@@ -88,7 +86,6 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
                                     "note": "Unexpected distribution interaction"
                                 })
 
-            # Explanations: sort by freq ascending (rarest first)
             rare_df = pd.DataFrame({
                 "index": non_null[non_null.isin(freq[freq < threshold].index)].index,
                 "value": non_null[non_null.isin(freq[freq < threshold].index)],
@@ -97,13 +94,34 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
 
             for _, row in rare_df.iterrows():
                 narrative = self._generate_narrative(row["frequency"], col, row["value"])
-                explanations.append({
+                explanation_entry = {
                     "row_index": int(row["index"]),
                     "column": col,
                     "value": row["value"],
                     "frequency": row["frequency"],
                     "narrative": narrative
-                })
+                }
+
+                if llm_count < NUM_EXAMPLES_LLM and self.llm:
+                    try:
+                        row_data = df.iloc[int(row["index"])].to_dict()
+                        llm_explanation = self.llm.explain_outlier(
+                            row_data=row_data,
+                            outlier_score=1 - row["frequency"],
+                            contributing_features={col: 1 - row["frequency"]},
+                            dataset_context=f"Rare value '{row['value']}' in '{col}'"
+                        )
+                        explanation_entry["llm_explanation"] = llm_explanation
+                        self.llm_explanations.append({
+                            "column": col,
+                            "value": row["value"],
+                            "explanation": llm_explanation
+                        })
+                        llm_count += 1
+                    except Exception:
+                        pass
+
+                explanations.append(explanation_entry)
 
         overall_outlier_ratio = np.mean([mask.mean() for mask in outlier_masks.values()]) if outlier_masks else 0
         self.result = {
@@ -117,24 +135,60 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
         self.context.shared_artifacts["categorical_outlier_masks"] = outlier_masks
 
     def _generate_narrative(self, freq: float, col: str, value: Any) -> str:
-        # AI-like narrative; expandable to LLM
-        return (
-            f"In column '{col}', value '{value}' appears with frequency {freq:.5f}, below the threshold. "
-            "This may indicate a rare event, data entry error, or novelty worth investigating."
-        )
+        return f"Value '{value}' in '{col}' appears with frequency {freq:.5f}"
 
     def summarize(self) -> dict:
         if self.result is None:
             return {"summary": {"outlier_ratio": 0}, "outliers": []}
-        return {
+
+        example_outliers = []
+        for outlier in self.result["outliers"][:5]:
+            clean_outlier = {k: v for k, v in outlier.items() if k != 'llm_explanation'}
+            example_outliers.append(clean_outlier)
+
+        summary = {
             "outlier_ratio": self.result["summary"]["outlier_ratio"],
             "skipped_columns": self.result["summary"]["skipped_columns"],
-            "example_outliers": self.result["outliers"][:5]  # Global top 5 for brevity
+            "example_outliers": example_outliers
         }
+
+        return summary
+
+    def get_full_summary(self) -> str:
+        if self.result is None:
+            return "No analysis performed."
+
+        lines = []
+
+        if self.llm_explanations:
+            lines.append(f"\n{'='*80}")
+            lines.append("🤖 LLM EXAMPLE EXPLANATIONS")
+            lines.append(f"{'='*80}")
+            for i, expl in enumerate(self.llm_explanations, 1):
+                lines.append(f"\n{i}. Column: {expl['column']}, Value: {expl['value']}")
+                lines.append(f"   {expl['explanation']}")
+            lines.append("")
+
+        if self.llm:
+            try:
+                summary_data = self.summarize()
+                component_summary = self.llm.generate_component_summary(
+                    component_name="Categorical Outlier Detection",
+                    metrics={"outlier_ratio": summary_data["outlier_ratio"], "num_outliers": len(self.result["outliers"])},
+                    findings=f"Found {len(self.result['outliers'])} rare categorical values ({summary_data['outlier_ratio']:.1%} of data)"
+                )
+                lines.append(f"{'='*80}")
+                lines.append("📋 COMPONENT SUMMARY")
+                lines.append(f"{'='*80}")
+                lines.append(component_summary)
+                lines.append(f"{'='*80}\n")
+            except Exception:
+                pass
+
+        return "\n".join(lines)
 
     def justify(self) -> str:
         return (
-            "This component detects categorical outliers using adaptive frequency thresholds and optional chi-square tests for interactions. "
-            "It intelligently skips high-cardinality columns (e.g., IDs) to avoid false positives, handles missing values, and provides AI-generated narratives for interpretability. "
-            "Adaptive logic ensures scalability across dataset sizes, outperforming static methods in identifying meaningful anomalies (inspired by Aggarwal, 2017, and information-theoretic approaches)."
+            "Frequency-based categorical outlier detection with adaptive thresholds. "
+            "Filters high-cardinality columns and flags rare values."
         )
