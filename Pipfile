@@ -10,6 +10,7 @@ pandas-stubs = "~=2.3.3"
 scikit-learn = "*"
 shap = "*"
 torch = "*"
+transformers = "*"
 
 [dev-packages]
 

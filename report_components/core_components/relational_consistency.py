@@ -1,42 +1,17 @@
-"""
-Relational Consistency Analysis Component
-
-This module implements comprehensive relational consistency checking for datasets,
-combining symbolic constraint validation with statistical analysis:
-
-- **Referential Integrity**: Validates foreign key relationships
-- **Functional Dependencies**: Detects and validates column dependencies
-- **Value Constraints**: Checks domain constraints, ranges, and patterns
-- **Cross-Column Consistency**: Validates logical relationships between columns
-- **Temporal Consistency**: Validates ordering and coherence of date/time columns
-
-This component is critical for detecting data quality issues that arise from:
-- ETL pipeline errors and data integration issues
-- Manual data entry mistakes
-- Schema evolution and migration artifacts
-- Incomplete or corrupted data transfers
-
-References:
-    - Abiteboul, S., Hull, R., & Vianu, V. (1995). Foundations of Databases.
-    - Rahm, E., & Do, H. H. (2000). Data cleaning: Problems and current approaches.
-      IEEE Data Engineering Bulletin, 23(4), 3-13.
-"""
-
 import re
-from typing import Dict, List, Tuple, Optional, Any, Set, Callable
+from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
 from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-from scipy import stats
 
 from report_components.base_component import ReportComponent, AnalysisContext
+from utils.consts import NUM_EXAMPLES_LLM
 
 
 class ConstraintType(Enum):
-    """Types of relational constraints."""
     REFERENTIAL_INTEGRITY = "referential_integrity"
     FUNCTIONAL_DEPENDENCY = "functional_dependency"
     VALUE_DOMAIN = "value_domain"
@@ -49,7 +24,6 @@ class ConstraintType(Enum):
 
 
 class ViolationSeverity(Enum):
-    """Severity levels for constraint violations."""
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -59,7 +33,6 @@ class ViolationSeverity(Enum):
 
 @dataclass
 class ConstraintViolation:
-    """Container for a single constraint violation."""
     constraint_type: ConstraintType
     description: str
     affected_columns: List[str]
@@ -73,17 +46,15 @@ class ConstraintViolation:
 
 @dataclass
 class FunctionalDependency:
-    """Represents a detected or validated functional dependency."""
-    determinant: List[str]  # Left-hand side columns
-    dependent: str  # Right-hand side column
-    confidence: float  # Proportion of rows satisfying the FD
+    determinant: List[str]
+    dependent: str
+    confidence: float
     violation_count: int
     is_approximate: bool
 
 
 @dataclass
 class RelationalConsistencyResult:
-    """Structured container for relational consistency analysis results."""
     violations: List[ConstraintViolation]
     functional_dependencies: List[FunctionalDependency]
     detected_constraints: Dict[str, Any]
@@ -93,46 +64,6 @@ class RelationalConsistencyResult:
 
 
 class RelationalConsistencyComponent(ReportComponent):
-    """
-    Relational Consistency Analysis using symbolic and statistical methods.
-
-    This component performs comprehensive validation of relational constraints
-    in tabular data, combining:
-
-    1. **Symbolic Validation**: Rule-based checking of explicit constraints
-       like uniqueness, not-null, value domains, and patterns
-
-    2. **Statistical Discovery**: Automatic detection of implicit functional
-       dependencies and cross-column relationships using information theory
-
-    3. **Temporal Analysis**: Validation of date/time column coherence and
-       ordering constraints
-
-    4. **Cross-Column Logic**: Checking logical relationships between columns
-       (e.g., end_date > start_date, total = sum of parts)
-
-    The analysis produces:
-    - Detailed violation reports with examples and row indices
-    - Confidence scores for discovered functional dependencies
-    - Overall and per-column consistency scores
-    - Actionable recommendations for data cleaning
-
-    Attributes:
-        check_uniqueness: Whether to check uniqueness constraints
-        check_not_null: Whether to check not-null constraints
-        check_value_domains: Whether to validate value domains
-        check_patterns: Whether to validate string patterns
-        check_functional_dependencies: Whether to discover FDs
-        check_temporal: Whether to validate temporal consistency
-        check_cross_column: Whether to check cross-column logic
-        uniqueness_candidates: Columns expected to be unique
-        not_null_columns: Columns expected to be non-null
-        value_domains: Expected value domains per column
-        patterns: Expected regex patterns per column
-        cross_column_rules: Custom cross-column validation rules
-        fd_confidence_threshold: Minimum confidence for FD detection
-    """
-
     def __init__(
         self,
         context: AnalysisContext,
@@ -151,9 +82,10 @@ class RelationalConsistencyComponent(ReportComponent):
         fd_confidence_threshold: float = 0.95,
         max_fd_determinant_size: int = 2,
         max_violations_to_report: int = 50,
-        random_state: int = 42
+        random_state: int = 42,
+        use_llm_explanations: bool = True
     ):
-        super().__init__(context)
+        super().__init__(context, use_llm_explanations)
         self.check_uniqueness = check_uniqueness
         self.check_not_null = check_not_null
         self.check_value_domains = check_value_domains
@@ -170,21 +102,10 @@ class RelationalConsistencyComponent(ReportComponent):
         self.max_fd_determinant_size = max_fd_determinant_size
         self.max_violations_to_report = max_violations_to_report
         self.random_state = random_state
+        self.llm_explanations = []
 
     def analyze(self):
-        """
-        Run relational consistency analysis.
-
-        Steps:
-        1. Validate explicit constraints (uniqueness, not-null, domains, patterns)
-        2. Discover and validate functional dependencies
-        3. Check temporal consistency
-        4. Validate cross-column rules
-        5. Compute consistency scores
-        6. Generate recommendations
-        """
         df = self.context.dataset.df
-
         if df is None or df.empty:
             raise ValueError("Dataset is empty or not provided")
 
@@ -192,31 +113,26 @@ class RelationalConsistencyComponent(ReportComponent):
         functional_dependencies: List[FunctionalDependency] = []
         detected_constraints: Dict[str, Any] = {}
 
-        # 1. Check uniqueness constraints
         if self.check_uniqueness:
             uniqueness_violations, unique_cols = self._check_uniqueness(df)
             violations.extend(uniqueness_violations)
             detected_constraints["unique_columns"] = unique_cols
 
-        # 2. Check not-null constraints
         if self.check_not_null:
             not_null_violations, null_stats = self._check_not_null(df)
             violations.extend(not_null_violations)
             detected_constraints["null_statistics"] = null_stats
 
-        # 3. Check value domain constraints
         if self.check_value_domains:
             domain_violations, domain_info = self._check_value_domains(df)
             violations.extend(domain_violations)
             detected_constraints["value_domains"] = domain_info
 
-        # 4. Check pattern constraints
         if self.check_patterns:
             pattern_violations, pattern_info = self._check_patterns(df)
             violations.extend(pattern_violations)
             detected_constraints["patterns"] = pattern_info
 
-        # 5. Discover and validate functional dependencies
         if self.check_functional_dependencies:
             fd_violations, fds = self._analyze_functional_dependencies(df)
             violations.extend(fd_violations)
@@ -231,22 +147,27 @@ class RelationalConsistencyComponent(ReportComponent):
                 for fd in fds
             ]
 
-        # 6. Check temporal consistency
         if self.check_temporal:
             temporal_violations, temporal_info = self._check_temporal_consistency(df)
             violations.extend(temporal_violations)
             detected_constraints["temporal"] = temporal_info
 
-        # 7. Check cross-column rules
         if self.check_cross_column:
             cross_violations = self._check_cross_column_rules(df)
             violations.extend(cross_violations)
 
-        # Compute consistency scores
         overall_score = self._compute_overall_consistency_score(violations, len(df))
         column_scores = self._compute_column_consistency_scores(violations, df.columns.tolist())
 
-        # Build result
+        print(f"\n📊 Relational Consistency: Found {len(violations)} violations")
+
+        violations_to_report = violations[:self.max_violations_to_report]
+        violations_dicts = []
+
+        for i, v in enumerate(violations_to_report):
+            generate_llm = (i < NUM_EXAMPLES_LLM and self.llm)
+            violations_dicts.append(self._violation_to_dict(v, generate_llm=generate_llm))
+
         self.result = {
             "summary": {
                 "overall_consistency_score": round(overall_score, 4),
@@ -255,7 +176,7 @@ class RelationalConsistencyComponent(ReportComponent):
                 "violations_by_type": self._count_by_type(violations),
                 "total_functional_dependencies": len(functional_dependencies)
             },
-            "violations": [self._violation_to_dict(v) for v in violations[:self.max_violations_to_report]],
+            "violations": violations_dicts,
             "functional_dependencies": [
                 {
                     "determinant": fd.determinant,
@@ -271,7 +192,6 @@ class RelationalConsistencyComponent(ReportComponent):
             "impact": self._assess_impact(violations, overall_score)
         }
 
-        # Store in shared artifacts
         self.context.shared_artifacts["relational_violations"] = violations
         self.context.shared_artifacts["consistency_score"] = overall_score
         self.context.shared_artifacts["functional_dependencies"] = functional_dependencies
@@ -990,9 +910,8 @@ class RelationalConsistencyComponent(ReportComponent):
             counts[v.constraint_type.value] += 1
         return dict(counts)
 
-    def _violation_to_dict(self, v: ConstraintViolation) -> Dict[str, Any]:
-        """Convert ConstraintViolation to dictionary."""
-        return {
+    def _violation_to_dict(self, v: ConstraintViolation, generate_llm: bool = False) -> Dict[str, Any]:
+        result = {
             "constraint_type": v.constraint_type.value,
             "description": v.description,
             "affected_columns": v.affected_columns,
@@ -1003,6 +922,25 @@ class RelationalConsistencyComponent(ReportComponent):
             "row_indices": v.row_indices,
             "recommendation": v.recommendation
         }
+
+        if generate_llm and self.llm:
+            try:
+                llm_explanation = self.llm.explain_consistency_violation(
+                    violation_type=v.constraint_type.value,
+                    affected_columns=v.affected_columns,
+                    example_violations=v.example_violations[:1],
+                    violation_ratio=v.violation_ratio
+                )
+                result["llm_explanation"] = llm_explanation
+                self.llm_explanations.append({
+                    "type": "violation",
+                    "constraint_type": v.constraint_type.value,
+                    "explanation": llm_explanation
+                })
+            except Exception:
+                pass
+
+        return result
 
     def _assess_impact(
         self,
@@ -1066,29 +1004,45 @@ class RelationalConsistencyComponent(ReportComponent):
         }
 
     def summarize(self) -> dict:
-        """Return a concise summary of the analysis."""
         if self.result is None:
             raise RuntimeError("analyze() must be called before summarize()")
 
-        return {
+        clean_violations = []
+        for v in self.result["violations"][:5]:
+            clean_v = {k: v for k, v in v.items() if k != 'llm_explanation'}
+            clean_violations.append(clean_v)
+
+        summary = {
             "overall_consistency_score": self.result["summary"]["overall_consistency_score"],
             "total_violations": self.result["summary"]["total_violations"],
             "violations_by_severity": self.result["summary"]["violations_by_severity"],
             "total_functional_dependencies": self.result["summary"]["total_functional_dependencies"],
-            "risk_level": self.result["impact"]["risk_level"]
+            "risk_level": self.result["impact"]["risk_level"],
+            "example_violations": clean_violations
         }
 
+        return summary
+
+    def get_full_summary(self) -> str:
+        if self.result is None:
+            raise RuntimeError("analyze() must be called before get_full_summary()")
+
+        lines = [super().get_full_summary()]
+
+        if self.llm_explanations:
+            lines.append(f"\n{'='*80}")
+            lines.append("🤖 LLM EXPLANATIONS")
+            lines.append(f"{'='*80}")
+            for i, expl in enumerate(self.llm_explanations, 1):
+                lines.append(f"\n{i}. {expl['constraint_type'].upper()}")
+                lines.append(f"   {expl['explanation']}")
+            lines.append(f"{'='*80}\n")
+
+        return "\n".join(lines)
+
     def justify(self) -> str:
-        """Provide justification for this component's inclusion."""
         return (
-            "Relational consistency analysis is fundamental for ensuring data integrity in "
-            "tabular datasets. This component combines symbolic constraint validation with "
-            "statistical dependency discovery to detect violations that can compromise model "
-            "reliability. It checks explicit constraints (uniqueness, not-null, value domains, "
-            "patterns) and automatically discovers implicit functional dependencies using "
-            "information-theoretic methods. Temporal consistency validation catches date ordering "
-            "errors, while cross-column logic verification ensures relational coherence. "
-            "The resulting consistency scores and detailed violation reports enable targeted "
-            "data cleaning, reducing the risk of model failures due to constraint violations "
-            "that might go unnoticed in traditional exploratory data analysis."
+            "Relational consistency analysis validates data integrity through symbolic "
+            "constraint checking and statistical dependency discovery. Detects violations "
+            "in uniqueness, not-null, domains, patterns, and functional dependencies."
         )

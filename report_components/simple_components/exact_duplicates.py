@@ -3,7 +3,7 @@ from typing import Dict, Any, List
 
 import pandas as pd
 
-from report_components.base_component import ReportComponent
+from report_components.base_component import ReportComponent, AnalysisContext
 
 LOW_DUPLICATES_RATIO = 0.001
 MEDIUM_DUPLICATES_RATIO = 0.01
@@ -12,6 +12,9 @@ class ExactDuplicateDetectionComponent(ReportComponent):
     """
     Detects and analyzes exact duplicate rows and evaluates their impact.
     """
+
+    def __init__(self, context: AnalysisContext, use_llm_explanations: bool = True):
+        super().__init__(context, use_llm_explanations)
 
     def analyze(self):
         df = self.context.dataset.df
@@ -111,3 +114,29 @@ class ExactDuplicateDetectionComponent(ReportComponent):
             "only identifies duplicates but quantifies their systemic impact on model behavior, "
             "making it an essential part of a learning-based data quality assessment pipeline."
         )
+
+    def get_full_summary(self) -> str:
+        if self.result is None:
+            return ""
+
+        lines = []
+        if self.llm:
+            try:
+                summary_data = self.summarize()
+                findings = f"Duplicate ratio: {summary_data['duplicate_ratio']:.1%}, {summary_data['duplicate_groups']} groups, risk: {summary_data['risk_level']}"
+
+                component_summary = self.llm.generate_component_summary(
+                    component_name="Exact Duplicate Detection",
+                    metrics={"duplicate_ratio": summary_data["duplicate_ratio"], "duplicate_groups": summary_data["duplicate_groups"]},
+                    findings=findings
+                )
+                lines.append(f"\n{'='*80}")
+                lines.append("📋 COMPONENT SUMMARY")
+                lines.append(f"{'='*80}")
+                lines.append(component_summary)
+                lines.append(f"{'='*80}\n")
+            except Exception:
+                pass
+
+        return "\n".join(lines)
+

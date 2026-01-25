@@ -11,6 +11,7 @@ from report_components.core_components.label_noise_detection import LabelNoiseDe
 from report_components.core_components.composite_quality_score import CompositeQualityScoreComponent
 from report_components.core_components.relational_consistency import RelationalConsistencyComponent
 from report_components.core_components.near_duplicate_detection import NearDuplicateDetectionComponent
+from report_components.core_components.llm_dataset_summary import LLMDatasetSummaryComponent
 
 def main():
     dataset = Dataset.from_parquet("titanic.parquet")
@@ -18,16 +19,17 @@ def main():
     context = AnalysisContext(dataset)
 
     report = Report()
-    # report.add_component(MissingValuesReport(context))
-    # report.add_component(DatasetOverviewComponent(context))
-    # report.add_component(ExactDuplicateDetectionComponent(context))
-    # report.add_component(OutlierDetectionComponent(context))
-    # report.add_component(CategoricalOutlierDetectionComponent(context))
+    report.add_component(MissingValuesReport(context))
+    report.add_component(DatasetOverviewComponent(context))
+    report.add_component(ExactDuplicateDetectionComponent(context))
+    report.add_component(OutlierDetectionComponent(context))
+    report.add_component(CategoricalOutlierDetectionComponent(context))
     # report.add_component(DistributionModelingComponent(context))
     # report.add_component(CompositeQualityScoreComponent(context))
     # report.add_component(LabelNoiseDetectionComponent(context, 'Survived'))
-    report.add_component(RelationalConsistencyComponent(context))
-    report.add_component(NearDuplicateDetectionComponent(context))
+    # report.add_component(RelationalConsistencyComponent(context))
+    # report.add_component(NearDuplicateDetectionComponent(context))
+    report.add_component(LLMDatasetSummaryComponent(context))
 
     report.run()
 
@@ -39,6 +41,11 @@ def main():
         print("- Summary:")
         for k, v in component.summarize().items():
             print(f"  {k}: {v}")
+
+        if hasattr(component, 'get_full_summary'):
+            full_summary = component.get_full_summary()
+            if full_summary and full_summary.strip():
+                print(full_summary)
 
 if __name__ == "__main__":
     main()

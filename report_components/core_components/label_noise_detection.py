@@ -31,6 +31,7 @@ from scipy import stats
 from scipy.special import rel_entr
 
 from report_components.base_component import ReportComponent
+from utils.consts import NUM_EXAMPLES_LLM
 
 
 class NoiseType(Enum):
@@ -93,9 +94,10 @@ class LabelNoiseDetectionComponent(ReportComponent):
         n_permutations: int = 100,
         confidence_threshold: float = 0.5,
         use_ensemble: bool = True,
-        calibrate_probabilities: bool = True
+        calibrate_probabilities: bool = True,
+        use_llm_explanations: bool = True  # Enable LLM-powered explanations
     ):
-        super().__init__(context)
+        super().__init__(context, use_llm_explanations)
         self.target_column = target_column
         self.cv_folds = cv_folds
         self.n_permutations = n_permutations
@@ -507,11 +509,36 @@ class LabelNoiseDetectionComponent(ReportComponent):
         }
 
     def summarize(self) -> dict:
-        """Generate a summary of noise detection results."""
         if self._result is None:
             return {"error": "Analysis not yet performed"}
 
-        return {
+        llm_explanations = []
+        if self.llm and len(self._result.noise_indices) > 0:
+            df = self.context.dataset.df
+            for idx in self._result.noise_indices[:NUM_EXAMPLES_LLM]:
+                try:
+                    row_data = df.iloc[idx].to_dict()
+                    current_label = row_data.get(self.target_column)
+                    pred_probs = self.context.shared_artifacts.get("label_noise_scores", None)
+                    suggested_label = "uncertain"
+                    confidence = self._result.noise_scores[idx]
+
+                    explanation = self.llm.explain_label_noise(
+                        row_data=row_data,
+                        current_label=current_label,
+                        suggested_label=suggested_label,
+                        confidence=confidence
+                    )
+                    llm_explanations.append({
+                        "row_index": idx,
+                        "current_label": current_label,
+                        "noise_score": round(float(self._result.noise_scores[idx]), 4),
+                        "llm_explanation": explanation
+                    })
+                except Exception:
+                    pass
+
+        summary = {
             "noise_ratio": round(self._result.noise_ratio, 4),
             "suspicious_sample_count": len(self._result.noise_indices),
             "noise_type": self._result.noise_type.value,
@@ -527,6 +554,18 @@ class LabelNoiseDetectionComponent(ReportComponent):
                 float(np.diag(self._result.noise_transition_matrix).mean()), 4
             )
         }
+
+        if llm_explanations:
+            print(f"\n{'='*80}")
+            print("🤖 LLM EXPLANATIONS")
+            print(f"{'='*80}")
+            for i, expl in enumerate(llm_explanations, 1):
+                print(f"\n{i}. Row {expl['row_index']} - Label: {expl['current_label']}")
+                print(f"   Noise Score: {expl['noise_score']}")
+                print(f"   {expl['llm_explanation']}")
+            print(f"{'='*80}\n")
+
+        return summary
 
     def justify(self) -> str:
         """Provide theoretical justification for the methodology."""

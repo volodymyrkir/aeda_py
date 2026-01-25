@@ -9,6 +9,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from report_components.base_component import ReportComponent, AnalysisContext
+from utils.consts import NUM_EXAMPLES_LLM
 
 
 class Autoencoder(nn.Module):
@@ -60,9 +61,10 @@ class DistributionModelingComponent(ReportComponent):
             cardinality_threshold: float = 0.85,
             min_unique_for_id_heuristic: int = 50,
             max_explain_rows: int = 5,
-            max_explain_features: int = 5
+            max_explain_features: int = 5,
+            use_llm_explanations: bool = True  # Enable LLM-powered explanations
     ):
-        super().__init__(context)
+        super().__init__(context, use_llm_explanations)
         self.epochs = epochs
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -76,6 +78,7 @@ class DistributionModelingComponent(ReportComponent):
         self.min_unique_for_id_heuristic = min_unique_for_id_heuristic
         self.max_explain_rows = max_explain_rows
         self.max_explain_features = max_explain_features
+        self.llm_explanations = []
 
     def analyze(self):
         df = self.context.dataset.df
@@ -213,19 +216,43 @@ class DistributionModelingComponent(ReportComponent):
             threshold: float,
             feature_names: List[str]
     ) -> List[Dict[str, Any]]:
+        df = self.context.dataset.df
         high_error_indices = np.where(errors >= threshold)[0][:self.max_explain_rows]
         explanations = []
-        for idx in high_error_indices:
+        for i, idx in enumerate(high_error_indices):
             feature_devs = per_feature_errors[idx]
             top_indices = np.argsort(feature_devs)[::-1][:self.max_explain_features]
             contributions = {feature_names[j]: round(float(feature_devs[j]), 4) for j in top_indices}
             narrative = self._generate_narrative(errors[idx], contributions)
-            explanations.append({
+
+            explanation_entry = {
                 "row_index": int(idx),
                 "error": round(float(errors[idx]), 5),
                 "top_contributing_features": contributions,
                 "narrative": narrative
-            })
+            }
+
+            if i < NUM_EXAMPLES_LLM and self.llm:
+                try:
+                    llm_explanation = self.llm.explain_distribution_anomaly(
+                        column_name="multivariate_distribution",
+                        detected_distribution="autoencoder_reconstruction",
+                        anomaly_details={
+                            "reconstruction_error": float(errors[idx]),
+                            "threshold": float(threshold),
+                            "contributing_features": contributions,
+                            "row_data": df.iloc[idx][feature_names].to_dict()
+                        }
+                    )
+                    explanation_entry["llm_explanation"] = llm_explanation
+                    self.llm_explanations.append({
+                        "row_index": int(idx),
+                        "explanation": llm_explanation
+                    })
+                except Exception:
+                    pass
+
+            explanations.append(explanation_entry)
         return explanations
 
     def _generate_narrative(
@@ -244,19 +271,40 @@ class DistributionModelingComponent(ReportComponent):
         if self.result is None:
             raise RuntimeError("analyze() must be called before summarize()")
         errors = np.array(self.result["row_level_errors"])
-        return {
+
+        example_explanations = []
+        for expl in self.result["high_error_explanations"][:3]:
+            clean_expl = {k: v for k, v in expl.items() if k != 'llm_explanation'}
+            example_explanations.append(clean_expl)
+
+        summary = {
             "mean_reconstruction_error": self.result["summary"]["mean_reconstruction_error"],
             "high_error_ratio": float(np.mean(errors >= self.result["summary"]["threshold"])),
-            "example_explanations": self.result["high_error_explanations"][:3],
+            "example_explanations": example_explanations,
             "skipped_columns": self.result["summary"]["skipped_columns"]
         }
 
+        return summary
+
+    def get_full_summary(self) -> str:
+        if self.result is None:
+            raise RuntimeError("analyze() must be called before get_full_summary()")
+
+        lines = [super().get_full_summary()]
+
+        if self.llm_explanations:
+            lines.append(f"\n{'='*80}")
+            lines.append("🤖 LLM EXPLANATIONS")
+            lines.append(f"{'='*80}")
+            for i, expl in enumerate(self.llm_explanations, 1):
+                lines.append(f"\n{i}. Row {expl['row_index']}")
+                lines.append(f"   {expl['explanation']}")
+            lines.append(f"{'='*80}\n")
+
+        return "\n".join(lines)
+
     def justify(self) -> str:
         return (
-            "This component leverages a neural autoencoder to model the joint distribution of numeric features, "
-            "capturing non-linear dependencies and enabling detection of distributional anomalies via reconstruction error. "
-            "It enhances flexibility with configurable architecture, training parameters, and early stopping for robustness. "
-            "Missing values are handled via imputation, high-cardinality columns are skipped to focus on meaningful features, "
-            "and local explanations with AI-generated narratives provide interpretable insights. This method advances beyond "
-            "traditional statistics, supporting thesis-level analysis of data manifolds and potential extensions to VAEs."
+            "Autoencoder-based distribution modeling for detecting multivariate anomalies. "
+            "Captures non-linear dependencies via reconstruction error."
         )
