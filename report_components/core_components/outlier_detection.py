@@ -139,16 +139,23 @@ class OutlierDetectionComponent(ReportComponent):
         outlier_indices = np.where(mask)[0]
         explanations = []
 
-        if self.use_shap:
-            explainer = shap.TreeExplainer(model)
-            shap_values = explainer.shap_values(X_scaled[outlier_indices])
-            if shap_values.ndim == 3:
-                shap_values = np.mean(shap_values, axis=0)
+        shap_values = None
+        use_shap_for_explanation = self.use_shap
+
+        if self.use_shap and len(outlier_indices) > 0:
+            try:
+                explainer = shap.TreeExplainer(model)
+                shap_values = explainer.shap_values(X_scaled[outlier_indices])
+                if shap_values.ndim == 3:
+                    shap_values = np.mean(shap_values, axis=0)
+            except (IndexError, ValueError, Exception):
+                use_shap_for_explanation = False
+                shap_values = None
 
         mean_vector = np.mean(X_scaled, axis=0)
 
         for i, idx in enumerate(outlier_indices):
-            if self.use_shap:
+            if use_shap_for_explanation and shap_values is not None:
                 deviation = np.abs(shap_values[i])
             else:
                 deviation = np.abs(X_scaled[idx] - mean_vector)

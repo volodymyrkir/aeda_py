@@ -91,11 +91,11 @@ class LabelNoiseDetectionComponent(ReportComponent):
         context,
         target_column: str,
         cv_folds: int = 5,
-        n_permutations: int = 100,
+        n_permutations: int = 20,
         confidence_threshold: float = 0.5,
         use_ensemble: bool = True,
         calibrate_probabilities: bool = True,
-        use_llm_explanations: bool = True  # Enable LLM-powered explanations
+        use_llm_explanations: bool = True
     ):
         super().__init__(context, use_llm_explanations)
         self.target_column = target_column
@@ -344,19 +344,13 @@ class LabelNoiseDetectionComponent(ReportComponent):
         self, X: np.ndarray, y: np.ndarray, observed_noise_ratio: float,
         n_classes: int
     ) -> Dict[str, Any]:
-        """
-        Perform permutation test to assess statistical significance.
-
-        Null hypothesis: The observed noise ratio could occur by chance
-        in a dataset with random label-feature associations.
-        """
         if self.n_permutations < 10:
             return {"p_value": None, "significant": None, "message": "Skipped"}
 
         permuted_ratios = []
         rng = np.random.RandomState(42)
 
-        for _ in range(min(self.n_permutations, 50)):  # Limit for performance
+        for _ in range(min(self.n_permutations, 20)):
             y_perm = rng.permutation(y)
             try:
                 probs_perm, _ = self._compute_out_of_fold_probabilities(
@@ -373,7 +367,6 @@ class LabelNoiseDetectionComponent(ReportComponent):
         if len(permuted_ratios) < 5:
             return {"p_value": None, "significant": None, "message": "Insufficient permutations"}
 
-        # One-sided p-value: probability of observing lower noise ratio under null
         p_value = np.mean(np.array(permuted_ratios) <= observed_noise_ratio)
 
         return {
@@ -388,138 +381,174 @@ class LabelNoiseDetectionComponent(ReportComponent):
         }
 
     def analyze(self) -> None:
-        """
-        Execute the complete label noise detection pipeline.
-
-        Pipeline stages:
-        1. Data preparation and validation
-        2. Out-of-fold probability estimation
-        3. Confident joint estimation
-        4. Noise transition matrix computation
-        5. Noise type categorization
-        6. Statistical significance testing
-        """
         df = self.context.dataset.df
 
-        # Validate inputs
         if self.target_column not in df.columns:
-            raise ValueError(f"Target column '{self.target_column}' not found")
+            self._set_empty_result(f"Target column '{self.target_column}' not found")
+            return
 
-        # Prepare features and labels
         X = df.drop(columns=[self.target_column]).select_dtypes(include=[np.number])
         if X.shape[1] == 0:
-            raise ValueError("No numeric features available for analysis")
+            self._set_empty_result("No numeric features available for analysis")
+            return
 
-        # Handle missing values
+        if len(df) < 10:
+            self._set_empty_result("Dataset too small for label noise detection (need at least 10 rows)")
+            return
+
         X = X.fillna(X.median())
         X_array = X.values
 
-        # Encode labels
         y_series = df[self.target_column].astype('category')
         labels = y_series.cat.categories.tolist()
         y = y_series.cat.codes.values
         n_classes = len(labels)
 
         if n_classes < 2:
-            raise ValueError("At least 2 classes required for noise detection")
+            self._set_empty_result("At least 2 classes required for noise detection")
+            return
 
-        # Stage 1: Out-of-fold probability estimation
-        pred_probs, ensemble_agreement = self._compute_out_of_fold_probabilities(
-            X_array, y, n_classes
-        )
-
-        # Stage 2: Confident joint estimation
-        confident_joint, thresholds, noise_scores = self._estimate_confident_joint(
-            y, pred_probs, n_classes
-        )
-
-        # Stage 3: Noise transition matrix
-        transition_matrix = self._estimate_noise_transition_matrix(confident_joint)
-
-        # Stage 4: Identify noisy samples
-        noise_mask = noise_scores > self.confidence_threshold
-        noise_indices = np.where(noise_mask)[0].tolist()
-        noise_ratio = float(np.mean(noise_mask))
-
-        # Stage 5: Per-class noise rates
-        per_class_noise = {}
-        per_class_noise_array = np.zeros(n_classes)
-        for i, label in enumerate(labels):
-            class_mask = y == i
-            if np.sum(class_mask) > 0:
-                rate = float(np.mean(noise_mask[class_mask]))
-            else:
-                rate = 0.0
-            per_class_noise[str(label)] = rate
-            per_class_noise_array[i] = rate
-
-        # Stage 6: Noise type categorization
-        noise_type, type_confidence = self._identify_noise_type(
-            transition_matrix, per_class_noise_array
-        )
-
-        # Stage 7: Statistical significance (optional, expensive)
-        if self.n_permutations > 0 and len(noise_indices) > 0:
-            stat_significance = self._permutation_test(
-                X_array, y, noise_ratio, n_classes
+        try:
+            pred_probs, ensemble_agreement = self._compute_out_of_fold_probabilities(
+                X_array, y, n_classes
             )
-        else:
-            stat_significance = {"p_value": None, "significant": None}
 
-        # Normalize joint distribution
-        joint_sum = confident_joint.sum()
-        if joint_sum > 0:
-            estimated_joint = confident_joint / joint_sum
-        else:
-            estimated_joint = confident_joint.astype(float)
+            confident_joint, thresholds, noise_scores = self._estimate_confident_joint(
+                y, pred_probs, n_classes
+            )
 
-        # Compile results
-        self._result = NoiseAnalysisResult(
-            noise_indices=noise_indices,
-            noise_scores=noise_scores,
-            noise_ratio=noise_ratio,
-            noise_transition_matrix=transition_matrix,
-            estimated_joint_distribution=estimated_joint,
-            class_thresholds={str(labels[i]): float(thresholds[i]) for i in range(n_classes)},
-            noise_type=noise_type,
-            noise_type_confidence=type_confidence,
-            per_class_noise_rates=per_class_noise,
-            statistical_significance=stat_significance,
-            ensemble_agreement=ensemble_agreement,
-            metadata={
-                "n_samples": len(y),
-                "n_classes": n_classes,
-                "n_features": X_array.shape[1],
-                "cv_folds": self.cv_folds,
-                "confidence_threshold": self.confidence_threshold
+            transition_matrix = self._estimate_noise_transition_matrix(confident_joint)
+
+            noise_mask = noise_scores > self.confidence_threshold
+            noise_indices = np.where(noise_mask)[0].tolist()
+            noise_ratio = float(np.mean(noise_mask))
+
+            per_class_noise = {}
+            per_class_noise_array = np.zeros(n_classes)
+            for i, label in enumerate(labels):
+                class_mask = y == i
+                if np.sum(class_mask) > 0:
+                    rate = float(np.mean(noise_mask[class_mask]))
+                else:
+                    rate = 0.0
+                per_class_noise[str(label)] = rate
+                per_class_noise_array[i] = rate
+
+            noise_type, type_confidence = self._identify_noise_type(
+                transition_matrix, per_class_noise_array
+            )
+
+            if self.n_permutations > 0 and len(noise_indices) > 0:
+                stat_significance = self._permutation_test(
+                    X_array, y, noise_ratio, n_classes
+                )
+            else:
+                stat_significance = {"p_value": None, "significant": None}
+
+            joint_sum = confident_joint.sum()
+            if joint_sum > 0:
+                estimated_joint = confident_joint / joint_sum
+            else:
+                estimated_joint = confident_joint.astype(float)
+
+            self._result = NoiseAnalysisResult(
+                noise_indices=noise_indices,
+                noise_scores=noise_scores,
+                noise_ratio=noise_ratio,
+                noise_transition_matrix=transition_matrix,
+                estimated_joint_distribution=estimated_joint,
+                class_thresholds={str(labels[i]): float(thresholds[i]) for i in range(n_classes)},
+                noise_type=noise_type,
+                noise_type_confidence=type_confidence,
+                per_class_noise_rates=per_class_noise,
+                statistical_significance=stat_significance,
+                ensemble_agreement=ensemble_agreement,
+                metadata={
+                    "n_samples": len(y),
+                    "n_classes": n_classes,
+                    "n_features": X_array.shape[1],
+                    "cv_folds": self.cv_folds,
+                    "confidence_threshold": self.confidence_threshold
+                }
+            )
+
+            self.context.shared_artifacts["label_noise_mask"] = noise_mask
+            self.context.shared_artifacts["label_noise_ratio"] = noise_ratio
+            self.context.shared_artifacts["label_noise_scores"] = noise_scores
+            self.context.shared_artifacts["noise_transition_matrix"] = transition_matrix
+
+            self.result = {
+                "noise_indices": noise_indices,
+                "noise_ratio": noise_ratio,
+                "class_thresholds": self._result.class_thresholds
             }
+
+        except Exception as e:
+            self._set_empty_result(f"Analysis failed: {str(e)}")
+
+    def _set_empty_result(self, reason: str):
+        self._result = NoiseAnalysisResult(
+            noise_indices=[],
+            noise_scores=np.array([]),
+            noise_ratio=0.0,
+            noise_transition_matrix=np.array([[]]),
+            estimated_joint_distribution=np.array([[]]),
+            class_thresholds={},
+            noise_type=NoiseType.UNIFORM,
+            noise_type_confidence=0.0,
+            per_class_noise_rates={},
+            statistical_significance={"p_value": None, "significant": None},
+            ensemble_agreement=0.0,
+            metadata={"skipped_reason": reason}
         )
-
-        # Store in shared artifacts for other components
-        self.context.shared_artifacts["label_noise_mask"] = noise_mask
-        self.context.shared_artifacts["label_noise_ratio"] = noise_ratio
-        self.context.shared_artifacts["label_noise_scores"] = noise_scores
-        self.context.shared_artifacts["noise_transition_matrix"] = transition_matrix
-
-        # Legacy format for compatibility
-        self.result = {
-            "noise_indices": noise_indices,
-            "noise_ratio": noise_ratio,
-            "class_thresholds": self._result.class_thresholds
-        }
+        self.result = {"skipped": True, "reason": reason}
 
     def summarize(self) -> dict:
         if self._result is None:
             return {"error": "Analysis not yet performed"}
 
+        if "skipped_reason" in self._result.metadata:
+            return {
+                "skipped": True,
+                "reason": self._result.metadata["skipped_reason"],
+                "noise_ratio": 0.0
+            }
+
+        summary = {
+            "noise_ratio": round(self._result.noise_ratio, 4),
+            "suspicious_sample_count": len(self._result.noise_indices),
+            "noise_type": self._result.noise_type.value,
+            "noise_type_confidence": round(self._result.noise_type_confidence, 3),
+            "ensemble_agreement": round(self._result.ensemble_agreement, 3),
+            "per_class_noise_rates": {
+                k: round(v, 4) for k, v in self._result.per_class_noise_rates.items()
+            },
+            "statistical_significance": self._result.statistical_significance.get("significant"),
+            "p_value": self._result.statistical_significance.get("p_value"),
+            "top_suspicious_indices": self._result.noise_indices[:20],
+            "transition_matrix_diagonal_mean": round(
+                float(np.diag(self._result.noise_transition_matrix).mean()), 4
+            ) if self._result.noise_transition_matrix.size > 0 else 0.0
+        }
+
+        return summary
+
+    def get_full_summary(self) -> str:
+        if self._result is None:
+            return "No analysis performed."
+
+        if "skipped_reason" in self._result.metadata:
+            return f"⚠️ Analysis skipped: {self._result.metadata['skipped_reason']}"
+
+        lines = []
         llm_explanations = []
+
         if self.llm and len(self._result.noise_indices) > 0:
             df = self.context.dataset.df
             for idx in self._result.noise_indices[:NUM_EXAMPLES_LLM]:
                 try:
                     row_data = df.iloc[idx].to_dict()
                     current_label = row_data.get(self.target_column)
-                    pred_probs = self.context.shared_artifacts.get("label_noise_scores", None)
                     suggested_label = "uncertain"
                     confidence = self._result.noise_scores[idx]
 
@@ -538,34 +567,33 @@ class LabelNoiseDetectionComponent(ReportComponent):
                 except Exception:
                     pass
 
-        summary = {
-            "noise_ratio": round(self._result.noise_ratio, 4),
-            "suspicious_sample_count": len(self._result.noise_indices),
-            "noise_type": self._result.noise_type.value,
-            "noise_type_confidence": round(self._result.noise_type_confidence, 3),
-            "ensemble_agreement": round(self._result.ensemble_agreement, 3),
-            "per_class_noise_rates": {
-                k: round(v, 4) for k, v in self._result.per_class_noise_rates.items()
-            },
-            "statistical_significance": self._result.statistical_significance.get("significant"),
-            "p_value": self._result.statistical_significance.get("p_value"),
-            "top_suspicious_indices": self._result.noise_indices[:20],
-            "transition_matrix_diagonal_mean": round(
-                float(np.diag(self._result.noise_transition_matrix).mean()), 4
-            )
-        }
-
         if llm_explanations:
-            print(f"\n{'='*80}")
-            print("🤖 LLM EXPLANATIONS")
-            print(f"{'='*80}")
+            lines.append(f"\n{'='*80}")
+            lines.append("🤖 LLM EXAMPLE EXPLANATIONS")
+            lines.append(f"{'='*80}")
             for i, expl in enumerate(llm_explanations, 1):
-                print(f"\n{i}. Row {expl['row_index']} - Label: {expl['current_label']}")
-                print(f"   Noise Score: {expl['noise_score']}")
-                print(f"   {expl['llm_explanation']}")
-            print(f"{'='*80}\n")
+                lines.append(f"\n{i}. Row {expl['row_index']} - Label: {expl['current_label']}")
+                lines.append(f"   Noise Score: {expl['noise_score']}")
+                lines.append(f"   {expl['llm_explanation']}")
+            lines.append("")
 
-        return summary
+        if self.llm:
+            try:
+                summary_data = self.summarize()
+                component_summary = self.llm.generate_component_summary(
+                    component_name="Label Noise Detection",
+                    metrics={"noise_ratio": summary_data["noise_ratio"], "noise_type": summary_data["noise_type"]},
+                    findings=f"Found {summary_data['suspicious_sample_count']} suspicious labels ({summary_data['noise_ratio']:.1%} of data)"
+                )
+                lines.append(f"{'='*80}")
+                lines.append("📋 COMPONENT SUMMARY")
+                lines.append(f"{'='*80}")
+                lines.append(component_summary)
+                lines.append(f"{'='*80}\n")
+            except Exception:
+                pass
+
+        return "\n".join(lines)
 
     def justify(self) -> str:
         """Provide theoretical justification for the methodology."""

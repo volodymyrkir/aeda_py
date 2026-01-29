@@ -83,11 +83,14 @@ class LLMDatasetSummaryComponent(ReportComponent):
 
         try:
             condensed_summaries = {}
+            skip_keys = {'llm_explanation', 'llm_explanations', 'example_violations',
+                         'example_outliers', 'example_explanations', 'memory_mb',
+                         'potential_identifiers', 'worst_columns'}
+
             for comp_name, comp_data in component_summaries.items():
                 condensed_summaries[comp_name] = {}
                 for key, value in comp_data.items():
-                    if key in ['llm_explanation', 'llm_explanations', 'example_violations',
-                               'example_outliers', 'example_explanations']:
+                    if key in skip_keys:
                         continue
                     if isinstance(value, str) and len(value) > 100:
                         continue

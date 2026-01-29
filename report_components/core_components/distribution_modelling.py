@@ -83,18 +83,21 @@ class DistributionModelingComponent(ReportComponent):
     def analyze(self):
         df = self.context.dataset.df
         if df is None or df.empty:
-            raise ValueError("Dataset is empty or not provided")
+            self.result = self._empty_result("Dataset is empty or not provided")
+            return
 
         candidate_numeric_cols = self.context.shared_artifacts.get(
             "numeric_columns",
             list(df.select_dtypes(include=[np.number]).columns)
         )
         if not candidate_numeric_cols:
-            raise ValueError("No numeric columns available for distribution modeling")
+            self.result = self._empty_result("No numeric columns available for distribution modeling")
+            return
 
         n_rows = len(df)
-        if n_rows < 10:  # Arbitrary min for training
-            raise ValueError("Dataset too small for autoencoder training")
+        if n_rows < 10:
+            self.result = self._empty_result("Dataset too small for autoencoder training (need at least 10 rows)")
+            return
 
         # Skip high-cardinality columns
         numeric_cols = []
@@ -113,7 +116,8 @@ class DistributionModelingComponent(ReportComponent):
             numeric_cols.append(col)
 
         if len(numeric_cols) < 2:
-            raise ValueError("Insufficient suitable numeric columns for modeling")
+            self.result = self._empty_result("Insufficient suitable numeric columns for modeling (need at least 2)")
+            return
 
         X = df[numeric_cols].copy()
 
@@ -125,7 +129,8 @@ class DistributionModelingComponent(ReportComponent):
             X = X.dropna()  # Fallback, but loses rows
 
         if len(X) < 10:
-            raise ValueError("Too few complete rows after handling missing values")
+            self.result = self._empty_result("Too few complete rows after handling missing values")
+            return
 
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
@@ -255,6 +260,20 @@ class DistributionModelingComponent(ReportComponent):
             explanations.append(explanation_entry)
         return explanations
 
+    def _empty_result(self, reason: str) -> Dict[str, Any]:
+        return {
+            "summary": {
+                "mean_reconstruction_error": 0.0,
+                "threshold": 0.0,
+                "final_train_loss": 0.0,
+                "skipped_columns": [],
+                "used_columns": [],
+                "skipped_reason": reason
+            },
+            "row_level_errors": [],
+            "high_error_explanations": []
+        }
+
     def _generate_narrative(
             self,
             error: float,
@@ -270,6 +289,15 @@ class DistributionModelingComponent(ReportComponent):
     def summarize(self) -> dict:
         if self.result is None:
             raise RuntimeError("analyze() must be called before summarize()")
+
+        if "skipped_reason" in self.result["summary"]:
+            return {
+                "skipped": True,
+                "reason": self.result["summary"]["skipped_reason"],
+                "mean_reconstruction_error": 0.0,
+                "high_error_ratio": 0.0
+            }
+
         errors = np.array(self.result["row_level_errors"])
 
         example_explanations = []
@@ -279,7 +307,7 @@ class DistributionModelingComponent(ReportComponent):
 
         summary = {
             "mean_reconstruction_error": self.result["summary"]["mean_reconstruction_error"],
-            "high_error_ratio": float(np.mean(errors >= self.result["summary"]["threshold"])),
+            "high_error_ratio": float(np.mean(errors >= self.result["summary"]["threshold"])) if len(errors) > 0 else 0.0,
             "example_explanations": example_explanations,
             "skipped_columns": self.result["summary"]["skipped_columns"]
         }
@@ -290,16 +318,35 @@ class DistributionModelingComponent(ReportComponent):
         if self.result is None:
             raise RuntimeError("analyze() must be called before get_full_summary()")
 
-        lines = [super().get_full_summary()]
+        if "skipped_reason" in self.result["summary"]:
+            return f"Analysis skipped: {self.result['summary']['skipped_reason']}"
+
+        lines = []
 
         if self.llm_explanations:
             lines.append(f"\n{'='*80}")
-            lines.append("🤖 LLM EXPLANATIONS")
+            lines.append("🤖 LLM EXAMPLE EXPLANATIONS")
             lines.append(f"{'='*80}")
             for i, expl in enumerate(self.llm_explanations, 1):
                 lines.append(f"\n{i}. Row {expl['row_index']}")
                 lines.append(f"   {expl['explanation']}")
-            lines.append(f"{'='*80}\n")
+            lines.append("")
+
+        if self.llm:
+            try:
+                summary_data = self.summarize()
+                component_summary = self.llm.generate_component_summary(
+                    component_name="Distribution Modeling",
+                    metrics={"high_error_ratio": summary_data["high_error_ratio"]},
+                    findings=f"Found {summary_data['high_error_ratio']:.1%} of data with high reconstruction error"
+                )
+                lines.append(f"{'='*80}")
+                lines.append("📋 COMPONENT SUMMARY")
+                lines.append(f"{'='*80}")
+                lines.append(component_summary)
+                lines.append(f"{'='*80}\n")
+            except Exception:
+                pass
 
         return "\n".join(lines)
 
