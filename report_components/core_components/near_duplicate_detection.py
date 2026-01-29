@@ -269,98 +269,84 @@ class NearDuplicateDetectionComponent(ReportComponent):
         self._embeddings: Optional[np.ndarray] = None
 
     def analyze(self):
-        """
-        Run near-duplicate detection analysis.
-
-        Steps:
-        1. Preprocess data and compute row representations
-        2. Build MinHash signatures and LSH index
-        3. Find candidate pairs via LSH
-        4. Verify candidates with detailed similarity
-        5. Optionally cluster near-duplicates
-        6. Compute statistics and risk assessment
-        """
         df = self.context.dataset.df
 
         if df is None or df.empty:
-            raise ValueError("Dataset is empty or not provided")
-
-        if len(df) < 2:
-            self.result = self._empty_result()
+            self.result = self._empty_result("Dataset is empty or not provided")
             return
 
-        # Determine columns to use
+        if len(df) < 2:
+            self.result = self._empty_result("Dataset too small (need at least 2 rows)")
+            return
+
         use_columns = [c for c in df.columns if c not in self.exclude_columns]
 
         if not use_columns:
-            raise ValueError("No columns available for near-duplicate detection after exclusions")
+            self.result = self._empty_result("No columns available after exclusions")
+            return
 
-        # Initialize MinHash and LSH
-        self._minhasher = MinHasher(num_perm=self.num_perm, seed=self.random_state)
-        self._lsh_index = LSHIndex(num_perm=self.num_perm, num_bands=self.num_bands)
+        try:
+            self._minhasher = MinHasher(num_perm=self.num_perm, seed=self.random_state)
+            self._lsh_index = LSHIndex(num_perm=self.num_perm, num_bands=self.num_bands)
 
-        # Compute signatures and build index
-        signatures = self._compute_signatures(df, use_columns)
+            signatures = self._compute_signatures(df, use_columns)
 
-        for idx, sig in enumerate(signatures):
-            self._lsh_index.insert(idx, sig)
+            for idx, sig in enumerate(signatures):
+                self._lsh_index.insert(idx, sig)
 
-        # Find and verify candidate pairs
-        pairs = self._find_near_duplicate_pairs(df, signatures, use_columns)
+            pairs = self._find_near_duplicate_pairs(df, signatures, use_columns)
 
-        # Cluster near-duplicates if enabled
-        clusters = []
-        if self.cluster_similar_records and pairs:
-            clusters = self._cluster_near_duplicates(pairs, len(df))
+            clusters = []
+            if self.cluster_similar_records and pairs:
+                clusters = self._cluster_near_duplicates(pairs, len(df))
 
-        # Compute column contribution to similarity
-        column_contribution = self._compute_column_contribution(pairs, use_columns)
+            column_contribution = self._compute_column_contribution(pairs, use_columns)
 
-        # Compute affected rows
-        affected_indices = set()
-        for pair in pairs:
-            affected_indices.add(pair.index_a)
-            affected_indices.add(pair.index_b)
+            affected_indices = set()
+            for pair in pairs:
+                affected_indices.add(pair.index_a)
+                affected_indices.add(pair.index_b)
 
-        affected_rows = len(affected_indices)
-        near_duplicate_ratio = affected_rows / len(df) if len(df) > 0 else 0.0
+            affected_rows = len(affected_indices)
+            near_duplicate_ratio = affected_rows / len(df) if len(df) > 0 else 0.0
 
-        # Build result
-        result = NearDuplicateResult(
-            pairs=pairs[:self.max_pairs_to_report],
-            clusters=clusters,
-            near_duplicate_ratio=round(near_duplicate_ratio, 5),
-            affected_rows=affected_rows,
-            detection_methods_used=self._get_detection_methods(),
-            column_contribution=column_contribution,
-            metadata={
-                "total_rows": len(df),
-                "columns_used": use_columns,
-                "similarity_threshold": self.similarity_threshold,
-                "total_pairs_found": len(pairs)
+            result = NearDuplicateResult(
+                pairs=pairs[:self.max_pairs_to_report],
+                clusters=clusters,
+                near_duplicate_ratio=round(near_duplicate_ratio, 5),
+                affected_rows=affected_rows,
+                detection_methods_used=self._get_detection_methods(),
+                column_contribution=column_contribution,
+                metadata={
+                    "total_rows": len(df),
+                    "columns_used": use_columns,
+                    "similarity_threshold": self.similarity_threshold,
+                    "total_pairs_found": len(pairs)
+                }
+            )
+
+            self.result = {
+                "summary": {
+                    "near_duplicate_ratio": result.near_duplicate_ratio,
+                    "affected_rows": result.affected_rows,
+                    "total_pairs": len(pairs),
+                    "total_clusters": len(clusters),
+                    "detection_methods": result.detection_methods_used,
+                    "similarity_threshold": self.similarity_threshold
+                },
+                "pairs": [self._pair_to_dict(p, generate_llm=(i < NUM_EXAMPLES_LLM and self.llm is not None))
+                          for i, p in enumerate(result.pairs)],
+                "clusters": [self._cluster_to_dict(c) for c in clusters],
+                "column_contribution": column_contribution,
+                "impact": self._assess_impact(near_duplicate_ratio, len(pairs), len(clusters))
             }
-        )
 
-        self.result = {
-            "summary": {
-                "near_duplicate_ratio": result.near_duplicate_ratio,
-                "affected_rows": result.affected_rows,
-                "total_pairs": len(pairs),
-                "total_clusters": len(clusters),
-                "detection_methods": result.detection_methods_used,
-                "similarity_threshold": self.similarity_threshold
-            },
-            "pairs": [self._pair_to_dict(p, generate_llm=(i < NUM_EXAMPLES_LLM and self.llm is not None))
-                      for i, p in enumerate(result.pairs)],
-            "clusters": [self._cluster_to_dict(c) for c in clusters],
-            "column_contribution": column_contribution,
-            "impact": self._assess_impact(near_duplicate_ratio, len(pairs), len(clusters))
-        }
+            self.context.shared_artifacts["near_duplicate_pairs"] = pairs
+            self.context.shared_artifacts["near_duplicate_ratio"] = near_duplicate_ratio
+            self.context.shared_artifacts["near_duplicate_affected_indices"] = affected_indices
 
-        # Store in shared artifacts for downstream components
-        self.context.shared_artifacts["near_duplicate_pairs"] = pairs
-        self.context.shared_artifacts["near_duplicate_ratio"] = near_duplicate_ratio
-        self.context.shared_artifacts["near_duplicate_affected_indices"] = affected_indices
+        except Exception as e:
+            self.result = self._empty_result(f"Analysis failed: {str(e)}")
 
     def _compute_signatures(
         self,
@@ -758,9 +744,8 @@ class NearDuplicateDetectionComponent(ReportComponent):
             "size": cluster.size
         }
 
-    def _empty_result(self) -> Dict[str, Any]:
-        """Return empty result structure."""
-        return {
+    def _empty_result(self, reason: str = None) -> Dict[str, Any]:
+        result = {
             "summary": {
                 "near_duplicate_ratio": 0.0,
                 "affected_rows": 0,
@@ -774,10 +759,20 @@ class NearDuplicateDetectionComponent(ReportComponent):
             "column_contribution": {},
             "impact": {"risk_level": "none", "ml_implications": []}
         }
+        if reason:
+            result["summary"]["skipped_reason"] = reason
+        return result
 
     def summarize(self) -> dict:
         if self.result is None:
             raise RuntimeError("analyze() must be called before summarize()")
+
+        if "skipped_reason" in self.result.get("summary", {}):
+            return {
+                "skipped": True,
+                "reason": self.result["summary"]["skipped_reason"],
+                "near_duplicate_ratio": 0.0
+            }
 
         summary = {
             "near_duplicate_ratio": self.result["summary"]["near_duplicate_ratio"],
@@ -794,16 +789,48 @@ class NearDuplicateDetectionComponent(ReportComponent):
             )
         }
 
-        if self.llm_explanations:
-            print(f"\n{'='*80}")
-            print("🤖 LLM EXPLANATIONS")
-            print(f"{'='*80}")
-            for i, expl in enumerate(self.llm_explanations, 1):
-                print(f"\n{i}. Pair {expl['pair']}")
-                print(f"   {expl['explanation']}")
-            print(f"{'='*80}\n")
-
         return summary
+
+    def get_full_summary(self) -> str:
+        if self.result is None:
+            return "No analysis performed."
+
+        if "skipped_reason" in self.result.get("summary", {}):
+            return f"⚠️ Analysis skipped: {self.result['summary']['skipped_reason']}"
+
+        lines = []
+
+        if self.llm_explanations:
+            lines.append(f"\n{'='*80}")
+            lines.append("🤖 LLM EXAMPLE EXPLANATIONS")
+            lines.append(f"{'='*80}")
+            for i, expl in enumerate(self.llm_explanations, 1):
+                lines.append(f"\n{i}. Pair {expl['pair']}")
+                lines.append(f"   {expl['explanation']}")
+            lines.append("")
+
+        if self.llm:
+            try:
+                summary_data = self.summarize()
+                if summary_data.get("skipped"):
+                    return f"⚠️ Analysis skipped: {summary_data.get('reason', 'Unknown')}"
+                component_summary = self.llm.generate_component_summary(
+                    component_name="Near Duplicate Detection",
+                    metrics={
+                        "near_duplicate_ratio": summary_data["near_duplicate_ratio"],
+                        "pairs": summary_data["total_pairs"]
+                    },
+                    findings=f"Found {summary_data['total_pairs']} near-duplicate pairs ({summary_data['near_duplicate_ratio']:.1%} affected rows)"
+                )
+                lines.append(f"{'='*80}")
+                lines.append("📋 COMPONENT SUMMARY")
+                lines.append(f"{'='*80}")
+                lines.append(component_summary)
+                lines.append(f"{'='*80}\n")
+            except Exception:
+                pass
+
+        return "\n".join(lines)
 
     def justify(self) -> str:
         return (

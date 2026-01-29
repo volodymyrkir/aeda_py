@@ -19,7 +19,6 @@ Usage:
     llm = LLMService.create()
 """
 
-import os
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -294,21 +293,10 @@ class LLMService:
         matching_columns: List[str],
         differing_columns: List[str]
     ) -> str:
-        """Generate an explanation for why two rows are near-duplicates."""
-        prompt = f"""Explain why these two records are flagged as near-duplicates.
+        matching_vals = {k: row_a.get(k) for k in matching_columns[:3] if k in row_a}
+        differing_vals = {k: (row_a.get(k), row_b.get(k)) for k in differing_columns[:3] if k in row_a and k in row_b}
 
-        Record A: {json.dumps(row_a, indent=2, default=str)}
-        
-        Record B: {json.dumps(row_b, indent=2, default=str)}
-        
-        Similarity Score: {similarity_score:.2%}
-        Matching Columns: {', '.join(matching_columns)}
-        Differing Columns: {', '.join(differing_columns)}
-        
-        Provide a brief explanation (2-3 sentences) of:
-        1. What makes these records nearly identical
-        2. Possible causes (data entry variation, ETL issues, temporal versions)
-        3. Recommendation for handling (merge, keep both, investigate)"""
+        prompt = f"""Near-duplicate pair ({similarity_score:.0%} similar). Same values: {json.dumps(matching_vals, default=str)}. Different values: {json.dumps(differing_vals, default=str)}. In 2 sentences: why are these near-duplicates and should they be merged or kept separate?"""
 
         return self.generate(prompt)
 
@@ -319,7 +307,12 @@ class LLMService:
         example_violations: List[Dict[str, Any]],
         violation_ratio: float
     ) -> str:
-        prompt = f"""Consistency issue: {violation_type}. Columns: {', '.join(affected_columns)}. Rate: {violation_ratio:.1%}. Explain in 2 sentences."""
+        example_str = ""
+        if example_violations:
+            example = example_violations[0]
+            example_str = f" Example: {json.dumps(example, default=str)[:150]}."
+
+        prompt = f"""Consistency violation: {violation_type}. Columns: {', '.join(affected_columns)}. Affects {violation_ratio:.1%} of data.{example_str} In 2 sentences: what causes this inconsistency and how to fix it?"""
 
         return self.generate(prompt)
 
@@ -330,19 +323,9 @@ class LLMService:
         suggested_label: Any,
         confidence: float
     ) -> str:
-        """Generate an explanation for why a label might be noisy/incorrect."""
-        prompt = f"""Explain why this record's label might be incorrect (label noise).
+        key_features = {k: v for k, v in list(row_data.items())[:4] if k != 'Name'}
 
-        Row Data: {json.dumps(row_data, indent=2, default=str)}
-        
-        Current Label: {current_label}
-        Suggested Label: {suggested_label}
-        Confidence: {confidence:.2%}
-        
-        Provide a brief explanation (2-3 sentences) of:
-        1. Why the current label seems inconsistent with the features
-        2. Possible labeling errors (human error, ambiguous cases)
-        3. Recommendation (correct label, investigate, keep as is)"""
+        prompt = f"""Potential mislabel. Current: {current_label}, Suggested: {suggested_label}, Confidence: {confidence:.1%}. Features: {json.dumps(key_features, default=str)}. Explain in 2 sentences why label may be wrong."""
 
         return self.generate(prompt)
 
@@ -352,17 +335,12 @@ class LLMService:
         detected_distribution: str,
         anomaly_details: Dict[str, Any]
     ) -> str:
-        """Generate an explanation for a distribution anomaly."""
-        prompt = f"""Explain this column's distribution characteristics.
+        error = anomaly_details.get('reconstruction_error', 0)
+        threshold = anomaly_details.get('threshold', 0)
+        features = anomaly_details.get('contributing_features', {})
+        top_features = dict(list(features.items())[:3])
 
-        Column: {column_name}
-        Detected Distribution: {detected_distribution}
-        Analysis Details: {json.dumps(anomaly_details, indent=2, default=str)}
-        
-        Provide a brief explanation (2-3 sentences) of:
-        1. What the distribution tells us about this data
-        2. Any concerns for statistical analysis or ML modeling
-        3. Recommendations for handling (transformation, outlier treatment)"""
+        prompt = f"""Distribution anomaly in {column_name} ({detected_distribution}). Reconstruction error: {error:.3f} (threshold: {threshold:.3f}). Top deviating features: {json.dumps(top_features, default=str)}. In 2 sentences: why does this record deviate and is it a data error or rare case?"""
 
         return self.generate(prompt)
 

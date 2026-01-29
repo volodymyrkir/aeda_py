@@ -135,11 +135,11 @@ class CompositeQualityScoreComponent(ReportComponent):
     def __init__(
         self,
         context,
-        n_bootstrap: int = 100,
+        n_bootstrap: int = 30,
         custom_weights: Optional[Dict[str, float]] = None,
         target_column: Optional[str] = None,
         severity_thresholds: Optional[Dict[str, float]] = None,
-        use_llm_explanations: bool = True  # Enable LLM-powered explanations
+        use_llm_explanations: bool = True
     ):
         super().__init__(context, use_llm_explanations)
         self.n_bootstrap = n_bootstrap
@@ -274,31 +274,22 @@ class CompositeQualityScoreComponent(ReportComponent):
         }
 
     def _compute_consistency_features(self, df) -> Dict[str, float]:
-        """Compute consistency-related meta-features."""
-        # Exact duplicates
         duplicate_ratio = df.duplicated().mean()
 
-        # Near-duplicates (for numeric features)
         numeric_df = df.select_dtypes(include=[np.number]).dropna()
         near_dup_ratio = 0.0
 
         if len(numeric_df) > 1 and numeric_df.shape[1] > 0:
             try:
-                # Sample for large datasets
-                sample_size = min(1000, len(numeric_df))
+                sample_size = min(300, len(numeric_df))
                 sample_df = numeric_df.sample(n=sample_size, random_state=42)
-
-                # Normalize and compute pairwise distances
                 normalized = (sample_df - sample_df.mean()) / (sample_df.std() + 1e-10)
                 distances = pdist(normalized.values, metric='euclidean')
-
-                # Near-duplicates: very small distance
-                threshold = np.percentile(distances, 1)  # Bottom 1%
+                threshold = np.percentile(distances, 1)
                 near_dup_ratio = np.mean(distances < threshold * 0.1)
             except Exception:
                 pass
 
-        # Correlation statistics
         if numeric_df.shape[1] > 1:
             corr_values = numeric_df.corr().abs().values
             upper_tri = corr_values[np.triu_indices_from(corr_values, k=1)]
@@ -492,24 +483,19 @@ class CompositeQualityScoreComponent(ReportComponent):
     def _bootstrap_confidence_interval(
         self, df, confidence: float = 0.95
     ) -> Tuple[float, float]:
-        """
-        Compute bootstrap confidence interval for the composite score.
-
-        This quantifies uncertainty in our quality estimate due to sampling.
-        """
         if self.n_bootstrap < 10:
             return (0.0, 1.0)
 
         scores = []
         rng = np.random.RandomState(42)
+        sample_size = min(500, len(df))
 
         for _ in range(self.n_bootstrap):
-            # Resample with replacement
-            boot_idx = rng.choice(len(df), size=len(df), replace=True)
+            boot_idx = rng.choice(len(df), size=sample_size, replace=True)
             boot_df = df.iloc[boot_idx].reset_index(drop=True)
 
             try:
-                mf = self._extract_all_meta_features(boot_df)
+                mf = self._extract_lightweight_meta_features(boot_df)
                 dim_scores = self._compute_dimension_scores(mf)
                 weights = self._get_dimension_weights()
                 score = self._compute_composite_score(dim_scores, weights)
@@ -525,6 +511,51 @@ class CompositeQualityScoreComponent(ReportComponent):
         upper = np.percentile(scores, (1 - alpha / 2) * 100)
 
         return (float(lower), float(upper))
+
+    def _extract_lightweight_meta_features(self, df) -> MetaFeatures:
+        numeric_df = df.select_dtypes(include=[np.number])
+        missing_ratio = float(df.isna().mean().mean())
+        missing_features_ratio = float(df.isna().any().mean())
+        complete_cases_ratio = float((~df.isna().any(axis=1)).mean())
+
+        outlier_ratio = 0.0
+        if numeric_df.shape[1] > 0:
+            outlier_ratios = []
+            for col in numeric_df.columns[:5]:
+                Q1, Q3 = numeric_df[col].quantile([0.25, 0.75])
+                IQR = Q3 - Q1
+                if IQR > 0:
+                    outliers = (numeric_df[col] < Q1 - 1.5 * IQR) | (numeric_df[col] > Q3 + 1.5 * IQR)
+                    outlier_ratios.append(outliers.mean())
+            outlier_ratio = float(np.mean(outlier_ratios)) if outlier_ratios else 0.0
+
+        duplicate_ratio = float(df.duplicated().mean())
+
+        return MetaFeatures(
+            n_samples=len(df),
+            n_features=len(df.columns),
+            n_classes=None,
+            dimensionality=len(df.columns) / max(len(df), 1),
+            missing_ratio=missing_ratio,
+            missing_features_ratio=missing_features_ratio,
+            complete_cases_ratio=complete_cases_ratio,
+            mean_skewness=0.0,
+            mean_kurtosis=0.0,
+            outlier_ratio=outlier_ratio,
+            feature_variance_cv=0.0,
+            mean_feature_entropy=0.0,
+            mean_mutual_information=0.0,
+            redundancy_ratio=0.0,
+            duplicate_ratio=duplicate_ratio,
+            near_duplicate_ratio=0.0,
+            correlation_mean=0.0,
+            correlation_std=0.0,
+            class_imbalance_ratio=None,
+            label_noise_ratio=None,
+            class_entropy=None,
+            intrinsic_dimensionality=1.0,
+            feature_noise_ratio=0.0
+        )
 
     def _identify_quality_issues(self, mf: MetaFeatures) -> List[Dict[str, Any]]:
         """Identify specific quality issues based on meta-features."""
@@ -634,72 +665,90 @@ class CompositeQualityScoreComponent(ReportComponent):
                 "High dimensionality detected; consider feature selection to improve model efficiency"
             )
 
-        return list(dict.fromkeys(recommendations))  # Remove duplicates while preserving order
+        return list(dict.fromkeys(recommendations))
 
     def analyze(self) -> None:
-        """
-        Execute the complete quality assessment pipeline.
-
-        Pipeline stages:
-        1. Meta-feature extraction
-        2. Dimension score computation
-        3. Composite score aggregation
-        4. Bootstrap confidence intervals
-        5. Issue identification
-        6. Recommendation generation
-        """
         df = self.context.dataset.df
 
-        # Stage 1: Extract meta-features
-        meta_features = self._extract_all_meta_features(df)
+        if df is None or df.empty:
+            self._set_empty_result("Dataset is empty or not provided")
+            return
 
-        # Stage 2: Compute dimension scores
-        dimension_scores = self._compute_dimension_scores(meta_features)
+        if len(df) < 5:
+            self._set_empty_result("Dataset too small for quality assessment (need at least 5 rows)")
+            return
 
-        # Stage 3: Get weights and compute composite
-        weights = self._get_dimension_weights()
-        composite_score = self._compute_composite_score(dimension_scores, weights)
+        try:
+            meta_features = self._extract_all_meta_features(df)
+            dimension_scores = self._compute_dimension_scores(meta_features)
 
-        # Stage 4: Bootstrap confidence interval
-        confidence_interval = self._bootstrap_confidence_interval(df)
+            weights = self._get_dimension_weights()
+            composite_score = self._compute_composite_score(dimension_scores, weights)
 
-        # Stage 5: Identify issues
-        quality_issues = self._identify_quality_issues(meta_features)
+            confidence_interval = self._bootstrap_confidence_interval(df)
 
-        # Stage 6: Generate recommendations
-        recommendations = self._generate_recommendations(quality_issues, meta_features)
+            quality_issues = self._identify_quality_issues(meta_features)
 
-        # Compile results
-        self._result = QualityScoreResult(
-            composite_score=composite_score,
-            confidence_interval=confidence_interval,
-            dimension_scores=dimension_scores,
-            dimension_weights=weights,
-            meta_features=meta_features,
-            quality_issues=quality_issues,
-            recommendations=recommendations
-        )
+            recommendations = self._generate_recommendations(quality_issues, meta_features)
 
-        # Store in shared artifacts
-        self.context.shared_artifacts["quality_score"] = composite_score
-        self.context.shared_artifacts["quality_dimensions"] = dimension_scores
-        self.context.shared_artifacts["meta_features"] = meta_features
+            self._result = QualityScoreResult(
+                composite_score=composite_score,
+                confidence_interval=confidence_interval,
+                dimension_scores=dimension_scores,
+                dimension_weights=weights,
+                meta_features=meta_features,
+                quality_issues=quality_issues,
+                recommendations=recommendations
+            )
 
-        # Legacy format
-        self.result = {
-            "composite_score": composite_score,
-            "meta_features": {
-                "missingness": meta_features.missing_ratio,
-                "outlier_density": meta_features.outlier_ratio,
-                "feature_correlation": meta_features.correlation_mean,
-                "label_purity": 1.0 - (meta_features.label_noise_ratio or 0)
+            self.context.shared_artifacts["quality_score"] = composite_score
+            self.context.shared_artifacts["quality_dimensions"] = dimension_scores
+            self.context.shared_artifacts["meta_features"] = meta_features
+
+            self.result = {
+                "composite_score": composite_score,
+                "meta_features": {
+                    "missingness": meta_features.missing_ratio,
+                    "outlier_density": meta_features.outlier_ratio,
+                    "feature_correlation": meta_features.correlation_mean,
+                    "label_purity": 1.0 - (meta_features.label_noise_ratio or 0)
+                }
             }
-        }
+
+        except Exception as e:
+            self._set_empty_result(f"Analysis failed: {str(e)}")
+
+    def _set_empty_result(self, reason: str):
+        empty_mf = MetaFeatures(
+            n_samples=0, n_features=0, n_classes=None, dimensionality=0.0,
+            missing_ratio=0.0, missing_features_ratio=0.0, complete_cases_ratio=1.0,
+            mean_skewness=0.0, mean_kurtosis=0.0, outlier_ratio=0.0, feature_variance_cv=0.0,
+            mean_feature_entropy=0.0, mean_mutual_information=0.0, redundancy_ratio=0.0,
+            duplicate_ratio=0.0, near_duplicate_ratio=0.0, correlation_mean=0.0, correlation_std=0.0,
+            class_imbalance_ratio=None, label_noise_ratio=None, class_entropy=None,
+            intrinsic_dimensionality=1.0, feature_noise_ratio=0.0
+        )
+        self._result = QualityScoreResult(
+            composite_score=0.0,
+            confidence_interval=(0.0, 0.0),
+            dimension_scores={},
+            dimension_weights={},
+            meta_features=empty_mf,
+            quality_issues=[{"severity": "info", "description": reason, "dimension": "none", "metric": 0.0}],
+            recommendations=[]
+        )
+        self.result = {"skipped": True, "reason": reason}
 
     def summarize(self) -> dict:
-        """Generate a summary of quality assessment results."""
         if self._result is None:
             return {"error": "Analysis not yet performed"}
+
+        if hasattr(self, 'result') and isinstance(self.result, dict) and self.result.get("skipped"):
+            return {
+                "skipped": True,
+                "reason": self.result.get("reason", "Unknown"),
+                "data_readiness_score": 0.0
+            }
 
         return {
             "data_readiness_score": round(self._result.composite_score, 4),
@@ -723,6 +772,38 @@ class CompositeQualityScoreComponent(ReportComponent):
                 "duplicate_ratio": round(self._result.meta_features.duplicate_ratio, 4)
             }
         }
+
+    def get_full_summary(self) -> str:
+        if self._result is None:
+            return "No analysis performed."
+
+        if hasattr(self, 'result') and isinstance(self.result, dict) and self.result.get("skipped"):
+            return f"⚠️ Analysis skipped: {self.result.get('reason', 'Unknown')}"
+
+        lines = []
+
+        if self.llm:
+            try:
+                summary_data = self.summarize()
+                if summary_data.get("skipped"):
+                    return f"⚠️ Analysis skipped: {summary_data.get('reason', 'Unknown')}"
+                component_summary = self.llm.generate_component_summary(
+                    component_name="Composite Quality Score",
+                    metrics={
+                        "readiness_score": summary_data["data_readiness_score"],
+                        "issues": summary_data["n_quality_issues"]
+                    },
+                    findings=f"Data readiness score: {summary_data['data_readiness_score']:.2f} with {summary_data['n_quality_issues']} quality issues"
+                )
+                lines.append(f"{'='*80}")
+                lines.append("📋 COMPONENT SUMMARY")
+                lines.append(f"{'='*80}")
+                lines.append(component_summary)
+                lines.append(f"{'='*80}\n")
+            except Exception:
+                pass
+
+        return "\n".join(lines)
 
     def justify(self) -> str:
         """Provide theoretical justification for the methodology."""

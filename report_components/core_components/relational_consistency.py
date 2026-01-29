@@ -107,94 +107,118 @@ class RelationalConsistencyComponent(ReportComponent):
     def analyze(self):
         df = self.context.dataset.df
         if df is None or df.empty:
-            raise ValueError("Dataset is empty or not provided")
+            self._set_empty_result("Dataset is empty or not provided")
+            return
 
-        violations: List[ConstraintViolation] = []
-        functional_dependencies: List[FunctionalDependency] = []
-        detected_constraints: Dict[str, Any] = {}
+        if len(df) < 2:
+            self._set_empty_result("Dataset too small for consistency analysis (need at least 2 rows)")
+            return
 
-        if self.check_uniqueness:
-            uniqueness_violations, unique_cols = self._check_uniqueness(df)
-            violations.extend(uniqueness_violations)
-            detected_constraints["unique_columns"] = unique_cols
+        try:
+            violations: List[ConstraintViolation] = []
+            functional_dependencies: List[FunctionalDependency] = []
+            detected_constraints: Dict[str, Any] = {}
 
-        if self.check_not_null:
-            not_null_violations, null_stats = self._check_not_null(df)
-            violations.extend(not_null_violations)
-            detected_constraints["null_statistics"] = null_stats
+            if self.check_uniqueness:
+                uniqueness_violations, unique_cols = self._check_uniqueness(df)
+                violations.extend(uniqueness_violations)
+                detected_constraints["unique_columns"] = unique_cols
 
-        if self.check_value_domains:
-            domain_violations, domain_info = self._check_value_domains(df)
-            violations.extend(domain_violations)
-            detected_constraints["value_domains"] = domain_info
+            if self.check_not_null:
+                not_null_violations, null_stats = self._check_not_null(df)
+                violations.extend(not_null_violations)
+                detected_constraints["null_statistics"] = null_stats
 
-        if self.check_patterns:
-            pattern_violations, pattern_info = self._check_patterns(df)
-            violations.extend(pattern_violations)
-            detected_constraints["patterns"] = pattern_info
+            if self.check_value_domains:
+                domain_violations, domain_info = self._check_value_domains(df)
+                violations.extend(domain_violations)
+                detected_constraints["value_domains"] = domain_info
 
-        if self.check_functional_dependencies:
-            fd_violations, fds = self._analyze_functional_dependencies(df)
-            violations.extend(fd_violations)
-            functional_dependencies.extend(fds)
-            detected_constraints["functional_dependencies"] = [
-                {
-                    "determinant": fd.determinant,
-                    "dependent": fd.dependent,
-                    "confidence": fd.confidence,
-                    "is_approximate": fd.is_approximate
-                }
-                for fd in fds
-            ]
+            if self.check_patterns:
+                pattern_violations, pattern_info = self._check_patterns(df)
+                violations.extend(pattern_violations)
+                detected_constraints["patterns"] = pattern_info
 
-        if self.check_temporal:
-            temporal_violations, temporal_info = self._check_temporal_consistency(df)
-            violations.extend(temporal_violations)
-            detected_constraints["temporal"] = temporal_info
+            if self.check_functional_dependencies:
+                fd_violations, fds = self._analyze_functional_dependencies(df)
+                violations.extend(fd_violations)
+                functional_dependencies.extend(fds)
+                detected_constraints["functional_dependencies"] = [
+                    {
+                        "determinant": fd.determinant,
+                        "dependent": fd.dependent,
+                        "confidence": fd.confidence,
+                        "is_approximate": fd.is_approximate
+                    }
+                    for fd in fds
+                ]
 
-        if self.check_cross_column:
-            cross_violations = self._check_cross_column_rules(df)
-            violations.extend(cross_violations)
+            if self.check_temporal:
+                temporal_violations, temporal_info = self._check_temporal_consistency(df)
+                violations.extend(temporal_violations)
+                detected_constraints["temporal"] = temporal_info
 
-        overall_score = self._compute_overall_consistency_score(violations, len(df))
-        column_scores = self._compute_column_consistency_scores(violations, df.columns.tolist())
+            if self.check_cross_column:
+                cross_violations = self._check_cross_column_rules(df)
+                violations.extend(cross_violations)
 
-        print(f"\n📊 Relational Consistency: Found {len(violations)} violations")
+            overall_score = self._compute_overall_consistency_score(violations, len(df))
+            column_scores = self._compute_column_consistency_scores(violations, df.columns.tolist())
 
-        violations_to_report = violations[:self.max_violations_to_report]
-        violations_dicts = []
+            violations_to_report = violations[:self.max_violations_to_report]
+            violations_dicts = []
 
-        for i, v in enumerate(violations_to_report):
-            generate_llm = (i < NUM_EXAMPLES_LLM and self.llm)
-            violations_dicts.append(self._violation_to_dict(v, generate_llm=generate_llm))
+            for i, v in enumerate(violations_to_report):
+                generate_llm = (i < NUM_EXAMPLES_LLM and self.llm)
+                violations_dicts.append(self._violation_to_dict(v, generate_llm=generate_llm))
 
+            self.result = {
+                "summary": {
+                    "overall_consistency_score": round(overall_score, 4),
+                    "total_violations": len(violations),
+                    "violations_by_severity": self._count_by_severity(violations),
+                    "violations_by_type": self._count_by_type(violations),
+                    "total_functional_dependencies": len(functional_dependencies)
+                },
+                "violations": violations_dicts,
+                "functional_dependencies": [
+                    {
+                        "determinant": fd.determinant,
+                        "dependent": fd.dependent,
+                        "confidence": round(fd.confidence, 4),
+                        "violation_count": fd.violation_count,
+                        "is_approximate": fd.is_approximate
+                    }
+                    for fd in functional_dependencies
+                ],
+                "detected_constraints": detected_constraints,
+                "column_consistency_scores": column_scores,
+                "impact": self._assess_impact(violations, overall_score)
+            }
+
+            self.context.shared_artifacts["relational_violations"] = violations
+            self.context.shared_artifacts["consistency_score"] = overall_score
+            self.context.shared_artifacts["functional_dependencies"] = functional_dependencies
+
+        except Exception as e:
+            self._set_empty_result(f"Analysis failed: {str(e)}")
+
+    def _set_empty_result(self, reason: str):
         self.result = {
             "summary": {
-                "overall_consistency_score": round(overall_score, 4),
-                "total_violations": len(violations),
-                "violations_by_severity": self._count_by_severity(violations),
-                "violations_by_type": self._count_by_type(violations),
-                "total_functional_dependencies": len(functional_dependencies)
+                "overall_consistency_score": 1.0,
+                "total_violations": 0,
+                "violations_by_severity": {},
+                "violations_by_type": {},
+                "total_functional_dependencies": 0,
+                "skipped_reason": reason
             },
-            "violations": violations_dicts,
-            "functional_dependencies": [
-                {
-                    "determinant": fd.determinant,
-                    "dependent": fd.dependent,
-                    "confidence": round(fd.confidence, 4),
-                    "violation_count": fd.violation_count,
-                    "is_approximate": fd.is_approximate
-                }
-                for fd in functional_dependencies
-            ],
-            "detected_constraints": detected_constraints,
-            "column_consistency_scores": column_scores,
-            "impact": self._assess_impact(violations, overall_score)
+            "violations": [],
+            "functional_dependencies": [],
+            "detected_constraints": {},
+            "column_consistency_scores": {},
+            "impact": {"risk_level": "none", "ml_implications": [], "recommendations": [reason]}
         }
-
-        self.context.shared_artifacts["relational_violations"] = violations
-        self.context.shared_artifacts["consistency_score"] = overall_score
-        self.context.shared_artifacts["functional_dependencies"] = functional_dependencies
 
     def _check_uniqueness(
         self,
@@ -1007,9 +1031,16 @@ class RelationalConsistencyComponent(ReportComponent):
         if self.result is None:
             raise RuntimeError("analyze() must be called before summarize()")
 
+        if "skipped_reason" in self.result["summary"]:
+            return {
+                "skipped": True,
+                "reason": self.result["summary"]["skipped_reason"],
+                "overall_consistency_score": 1.0
+            }
+
         clean_violations = []
         for v in self.result["violations"][:5]:
-            clean_v = {k: v for k, v in v.items() if k != 'llm_explanation'}
+            clean_v = {k: val for k, val in v.items() if k != 'llm_explanation'}
             clean_violations.append(clean_v)
 
         summary = {
@@ -1027,16 +1058,38 @@ class RelationalConsistencyComponent(ReportComponent):
         if self.result is None:
             raise RuntimeError("analyze() must be called before get_full_summary()")
 
-        lines = [super().get_full_summary()]
+        if "skipped_reason" in self.result["summary"]:
+            return f"⚠️ Analysis skipped: {self.result['summary']['skipped_reason']}"
+
+        lines = []
 
         if self.llm_explanations:
             lines.append(f"\n{'='*80}")
-            lines.append("🤖 LLM EXPLANATIONS")
+            lines.append("🤖 LLM EXAMPLE EXPLANATIONS")
             lines.append(f"{'='*80}")
             for i, expl in enumerate(self.llm_explanations, 1):
                 lines.append(f"\n{i}. {expl['constraint_type'].upper()}")
                 lines.append(f"   {expl['explanation']}")
-            lines.append(f"{'='*80}\n")
+            lines.append("")
+
+        if self.llm:
+            try:
+                summary_data = self.summarize()
+                component_summary = self.llm.generate_component_summary(
+                    component_name="Relational Consistency",
+                    metrics={
+                        "consistency_score": summary_data["overall_consistency_score"],
+                        "violations": summary_data["total_violations"]
+                    },
+                    findings=f"Found {summary_data['total_violations']} consistency violations, score: {summary_data['overall_consistency_score']:.2f}"
+                )
+                lines.append(f"{'='*80}")
+                lines.append("📋 COMPONENT SUMMARY")
+                lines.append(f"{'='*80}")
+                lines.append(component_summary)
+                lines.append(f"{'='*80}\n")
+            except Exception:
+                pass
 
         return "\n".join(lines)
 

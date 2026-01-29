@@ -1,3 +1,7 @@
+import os
+import webbrowser
+
+from core.html_report_generator import HTMLReportGenerator
 from core.report import Report
 from preprocessing.dataset import Dataset
 from report_components.base_component import AnalysisContext
@@ -15,7 +19,7 @@ from report_components.core_components.llm_dataset_summary import LLMDatasetSumm
 
 def main():
     dataset = Dataset.from_parquet("titanic.parquet")
-    # dataset = Dataset.from_csv("sample_dataset.csv")
+    #dataset = Dataset.from_csv("sample_dataset.csv")
     context = AnalysisContext(dataset)
 
     report = Report()
@@ -24,28 +28,22 @@ def main():
     report.add_component(ExactDuplicateDetectionComponent(context))
     report.add_component(OutlierDetectionComponent(context))
     report.add_component(CategoricalOutlierDetectionComponent(context))
-    # report.add_component(DistributionModelingComponent(context))
-    # report.add_component(CompositeQualityScoreComponent(context))
-    # report.add_component(LabelNoiseDetectionComponent(context, 'Survived'))
-    # report.add_component(RelationalConsistencyComponent(context))
-    # report.add_component(NearDuplicateDetectionComponent(context))
+    report.add_component(DistributionModelingComponent(context))
+    report.add_component(CompositeQualityScoreComponent(context))
+    report.add_component(LabelNoiseDetectionComponent(context, 'Survived'))
+    report.add_component(RelationalConsistencyComponent(context))
+    report.add_component(NearDuplicateDetectionComponent(context))
     report.add_component(LLMDatasetSummaryComponent(context))
 
     report.run()
 
-    for component in report.components:
-        print("=" * 80)
-        print(component.__class__.__name__)
-        print("- Justification:")
-        print(component.justify())
-        print("- Summary:")
-        for k, v in component.summarize().items():
-            print(f"  {k}: {v}")
+    generator = HTMLReportGenerator("AEDA Data Quality Report")
+    report_path = generator.generate(report.components, "data_quality_report.html")
 
-        if hasattr(component, 'get_full_summary'):
-            full_summary = component.get_full_summary()
-            if full_summary and full_summary.strip():
-                print(full_summary)
+    webbrowser.open('file://' + os.path.realpath(report_path))
+
+    print(f"\n✅ Report generated: {report_path}")
+    print("Click 'Download as PDF' button in the browser to save as PDF")
 
 if __name__ == "__main__":
     main()
