@@ -99,21 +99,29 @@ class HTMLReportGenerator:
 
         llm_explanations_html = ""
         component_summary_html = ""
+        is_dataset_summary = component.__class__.__name__ == "LLMDatasetSummaryComponent"
 
         if hasattr(component, 'get_full_summary'):
             full_summary = component.get_full_summary()
             if full_summary and full_summary.strip():
-                llm_section, summary_section = self._parse_full_summary(full_summary)
+                llm_section, summary_section = self._parse_full_summary(full_summary, is_dataset_summary)
 
                 if llm_section:
                     llm_explanations_html = f"""
                 <div class="llm-explanations">
-                    <h4>🤖 LLM Example Explanations</h4>
+                    <h4>🔍 Semantic Explanations</h4>
                     <div class="llm-content">{llm_section}</div>
                 </div>"""
 
                 if summary_section:
-                    component_summary_html = f"""
+                    if is_dataset_summary:
+                        component_summary_html = f"""
+                <div class="component-summary-box dataset-summary-box">
+                    <h4>📊 Analysis Overview</h4>
+                    <div class="summary-content-html">{summary_section}</div>
+                </div>"""
+                    else:
+                        component_summary_html = f"""
                 <div class="component-summary-box">
                     <h4>📋 Component Summary</h4>
                     <div class="summary-content">{summary_section}</div>
@@ -141,23 +149,29 @@ class HTMLReportGenerator:
             {component_summary_html}
         </section>"""
 
-    def _parse_full_summary(self, full_summary: str) -> tuple:
-        """Parse full summary into LLM explanations and component summary sections."""
+    def _parse_full_summary(self, full_summary: str, is_dataset_summary: bool = False) -> tuple:
+        """Parse full summary into semantic explanations and component summary sections."""
         llm_section = ""
         summary_section = ""
 
         lines = full_summary.split('\n')
         current_section = None
         current_content = []
+        ai_assessment_content = []
 
         for line in lines:
             if '🤖 LLM EXAMPLE EXPLANATIONS' in line or 'LLM EXPLANATIONS' in line:
                 current_section = 'llm'
                 current_content = []
-            elif '📋 COMPONENT SUMMARY' in line:
+            elif '📋 COMPONENT SUMMARY' in line or '📊 COMPONENT METRICS OVERVIEW' in line:
                 if current_section == 'llm':
                     llm_section = '\n'.join(current_content)
                 current_section = 'summary'
+                current_content = []
+            elif '🤖 AI QUALITY ASSESSMENT' in line:
+                if current_section == 'summary':
+                    summary_section = '\n'.join(current_content)
+                current_section = 'ai_assessment'
                 current_content = []
             elif '=' * 10 in line:
                 continue
@@ -168,18 +182,130 @@ class HTMLReportGenerator:
             llm_section = '\n'.join(current_content)
         elif current_section == 'summary':
             summary_section = '\n'.join(current_content)
+        elif current_section == 'ai_assessment':
+            ai_assessment_content = current_content
 
         if not llm_section and not summary_section and full_summary.strip():
             summary_section = full_summary
 
         llm_section = html.escape(llm_section.strip())
-        summary_section = html.escape(summary_section.strip())
+
+        if is_dataset_summary and summary_section:
+            summary_section = self._format_metrics_as_html(summary_section.strip())
+            if ai_assessment_content:
+                summary_section += self._format_ai_assessment_as_html(ai_assessment_content)
+        else:
+            summary_section = html.escape(summary_section.strip())
 
         return llm_section, summary_section
+
+    def _format_metrics_as_html(self, metrics_text: str) -> str:
+        """Format component metrics as a nice HTML grid."""
+        lines = metrics_text.split('\n')
+        cards = []
+        current_card = None
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith('📌'):
+                if current_card:
+                    cards.append(current_card)
+                current_card = {'title': line.replace('📌', '').strip(), 'metrics': []}
+            elif line.startswith('•') and current_card:
+                current_card['metrics'].append(line.replace('•', '').strip())
+
+        if current_card:
+            cards.append(current_card)
+
+        if not cards:
+            return html.escape(metrics_text)
+
+        html_parts = ['<div class="metrics-grid">']
+        for card in cards:
+            metrics_html = ''.join([f'<div class="metric-item">{html.escape(m)}</div>' for m in card['metrics']])
+            html_parts.append(f'''
+                <div class="metric-card">
+                    <div class="metric-title">{html.escape(card['title'])}</div>
+                    {metrics_html}
+                </div>
+            ''')
+        html_parts.append('</div>')
+
+        return ''.join(html_parts)
+
+    def _format_ai_assessment_as_html(self, ai_lines: list) -> str:
+        """Format AI assessment as a beautiful HTML table with strengths and weaknesses."""
+        text = '\n'.join(ai_lines)
+
+        strengths = []
+        issues = []
+        priority = ""
+
+        current_section = None
+        for line in ai_lines:
+            line = line.strip()
+            if not line:
+                continue
+            if '✅' in line and 'STRENGTH' in line.upper():
+                current_section = 'strengths'
+                continue
+            elif '❌' in line and 'ISSUE' in line.upper():
+                current_section = 'issues'
+                continue
+            elif '🎯' in line and 'PRIORITY' in line.upper():
+                current_section = 'priority'
+                continue
+
+            if current_section == 'strengths' and line.startswith(('•', '-', '*')):
+                strengths.append(line.lstrip('•-* '))
+            elif current_section == 'issues' and line.startswith(('•', '-', '*')):
+                issues.append(line.lstrip('•-* '))
+            elif current_section == 'priority':
+                priority = line.lstrip('•-* ')
+
+        if not strengths and not issues:
+            return f'<div class="ai-assessment-text">{html.escape(text)}</div>'
+
+        strengths_html = ''.join([f'<tr><td class="strength-icon">✅</td><td>{html.escape(s)}</td></tr>' for s in strengths])
+        issues_html = ''.join([f'<tr><td class="issue-icon">❌</td><td>{html.escape(i)}</td></tr>' for i in issues])
+
+        priority_html = ""
+        if priority:
+            priority_html = f'''
+                <div class="priority-action">
+                    <span class="priority-icon">🎯</span>
+                    <span class="priority-text"><strong>Priority Action:</strong> {html.escape(priority)}</span>
+                </div>
+            '''
+
+        return f'''
+            <div class="ai-assessment-container">
+                <h5>AI Quality Assessment</h5>
+                <div class="assessment-tables">
+                    <div class="assessment-column strengths-column">
+                        <h6>✅ Strengths</h6>
+                        <table class="assessment-table">
+                            {strengths_html}
+                        </table>
+                    </div>
+                    <div class="assessment-column issues-column">
+                        <h6>❌ Issues</h6>
+                        <table class="assessment-table">
+                            {issues_html}
+                        </table>
+                    </div>
+                </div>
+                {priority_html}
+            </div>
+        '''
 
     def _format_name(self, name: str) -> str:
         """Convert CamelCase to readable format."""
         import re
+        if name == "LLMDatasetSummaryComponent":
+            return "Dataset Summary"
         name = name.replace("Component", "").replace("Report", "")
         return re.sub(r'(?<!^)(?=[A-Z])', ' ', name)
 
@@ -439,6 +565,142 @@ class HTMLReportGenerator:
             line-height: 1.7;
             color: #334155;
             white-space: pre-wrap;
+        }
+
+        .summary-content-html {
+            font-size: 0.9rem;
+            line-height: 1.7;
+            color: #334155;
+        }
+
+        .dataset-summary-box {
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            border-left: 4px solid #6366f1;
+        }
+
+        .dataset-summary-box h4 {
+            color: #4338ca;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .metric-card {
+            background: white;
+            border-radius: 8px;
+            padding: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            border: 1px solid #e2e8f0;
+        }
+
+        .metric-title {
+            font-weight: 600;
+            color: #4338ca;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .metric-item {
+            font-size: 0.85rem;
+            color: #475569;
+            padding: 0.25rem 0;
+        }
+
+        .ai-assessment-container {
+            margin-top: 1.5rem;
+            padding: 1.25rem;
+            background: white;
+            border-radius: 10px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .ai-assessment-container h5 {
+            font-size: 1rem;
+            color: #1e293b;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+
+        .assessment-tables {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        .assessment-column {
+            padding: 1rem;
+            border-radius: 8px;
+        }
+
+        .strengths-column {
+            background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+        }
+
+        .issues-column {
+            background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+        }
+
+        .assessment-column h6 {
+            font-size: 0.9rem;
+            margin-bottom: 0.75rem;
+            font-weight: 600;
+        }
+
+        .strengths-column h6 {
+            color: #166534;
+        }
+
+        .issues-column h6 {
+            color: #991b1b;
+        }
+
+        .assessment-table {
+            width: 100%;
+        }
+
+        .assessment-table tr {
+            border: none;
+        }
+
+        .assessment-table td {
+            padding: 0.4rem 0.5rem;
+            font-size: 0.85rem;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .strength-icon, .issue-icon {
+            width: 24px;
+            font-size: 1rem;
+        }
+
+        .priority-action {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: linear-gradient(135deg, #fefce8 0%, #fef9c3 100%);
+            border-radius: 8px;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+
+        .priority-icon {
+            font-size: 1.2rem;
+        }
+
+        .priority-text {
+            font-size: 0.9rem;
+            color: #854d0e;
+        }
+
+        .ai-assessment-text {
+            white-space: pre-wrap;
+            font-size: 0.9rem;
+            color: #334155;
         }
 
         footer {

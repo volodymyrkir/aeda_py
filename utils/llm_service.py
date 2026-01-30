@@ -172,7 +172,7 @@ class LLMService:
     Uses singleton pattern - model is loaded once and reused across all calls.
     """
 
-    SYSTEM_PROMPT = """You are a data quality analyst. Explain data issues concisely (2-3 sentences max). Focus on what the issue is and why it matters."""
+    SYSTEM_PROMPT = """You are a data quality analyst. Be extremely concise (2 sentences max). No code, no examples. Focus on: what the issue means and how to fix it semantically."""
 
     def __init__(self, provider: BaseLLMProvider):
         self.provider = provider
@@ -293,10 +293,7 @@ class LLMService:
         matching_columns: List[str],
         differing_columns: List[str]
     ) -> str:
-        matching_vals = {k: row_a.get(k) for k in matching_columns[:3] if k in row_a}
-        differing_vals = {k: (row_a.get(k), row_b.get(k)) for k in differing_columns[:3] if k in row_a and k in row_b}
-
-        prompt = f"""Near-duplicate pair ({similarity_score:.0%} similar). Same values: {json.dumps(matching_vals, default=str)}. Different values: {json.dumps(differing_vals, default=str)}. In 2 sentences: why are these near-duplicates and should they be merged or kept separate?"""
+        prompt = f"""Records {similarity_score:.0%} similar. Same: {', '.join(matching_columns[:3])}. Different: {', '.join(differing_columns[:2])}. One sentence: why similar and should merge/keep/investigate?"""
 
         return self.generate(prompt)
 
@@ -307,12 +304,7 @@ class LLMService:
         example_violations: List[Dict[str, Any]],
         violation_ratio: float
     ) -> str:
-        example_str = ""
-        if example_violations:
-            example = example_violations[0]
-            example_str = f" Example: {json.dumps(example, default=str)[:150]}."
-
-        prompt = f"""Consistency violation: {violation_type}. Columns: {', '.join(affected_columns)}. Affects {violation_ratio:.1%} of data.{example_str} In 2 sentences: what causes this inconsistency and how to fix it?"""
+        prompt = f"""Data consistency issue: {violation_type} in columns {', '.join(affected_columns)}. Affects {violation_ratio:.1%} of rows. In exactly 2 short sentences: 1) What this inconsistency means for data quality. 2) How to fix it (describe approach, no code)."""
 
         return self.generate(prompt)
 

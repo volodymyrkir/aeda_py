@@ -194,32 +194,123 @@ class LLMDatasetSummaryComponent(ReportComponent):
             "total_components_analyzed": self.result["summary"]["total_components_analyzed"],
             "total_issues_detected": self.result["summary"]["total_issues_detected"],
             "overall_risk_level": self.result["summary"]["overall_risk_level"],
-            "llm_summary_available": bool(self.result["llm_summary"])
+            "llm_summary_available": bool(self.result.get("llm_analysis"))
         }
 
     def justify(self) -> str:
         return (
-            "The LLM Dataset Summary component synthesizes results from all analysis "
-            "components into a coherent narrative that highlights key findings, risks, "
-            "and actionable recommendations. Using large language models enables natural "
-            "language explanations that are accessible to both technical and non-technical "
-            "stakeholders. This component bridges the gap between detailed statistical "
-            "analysis and practical decision-making by providing prioritized recommendations "
-            "and ML readiness assessments in human-readable format."
+            "The Dataset Summary component synthesizes results from all analysis "
+            "components into a coherent overview that highlights key findings, risks, "
+            "and actionable recommendations. It combines factual metrics from each "
+            "component with AI-powered insights for both technical and non-technical "
+            "stakeholders."
         )
+
+    def _format_component_metrics(self) -> str:
+        lines = []
+        component_summaries = self.result.get("component_summaries", {})
+
+        metric_mappings = {
+            "MissingValuesReport": [("num_columns_with_missing", "Columns with missing values")],
+            "DatasetOverviewComponent": [("dataset_shape", "Dataset shape")],
+            "ExactDuplicateDetectionComponent": [("duplicate_ratio", "Duplicate ratio"), ("risk_level", "Risk level")],
+            "OutlierDetectionComponent": [("outlier_ratio", "Outlier ratio")],
+            "CategoricalOutlierDetectionComponent": [("outlier_ratio", "Categorical outlier ratio")],
+            "DistributionModelingComponent": [("mean_reconstruction_error", "Mean reconstruction error"), ("high_error_ratio", "High error ratio")],
+            "CompositeQualityScoreComponent": [("data_readiness_score", "Data readiness score"), ("overall_quality", "Overall quality")],
+            "LabelNoiseDetectionComponent": [("noise_ratio", "Label noise ratio"), ("suspicious_sample_count", "Suspicious samples")],
+            "RelationalConsistencyComponent": [("total_violations", "Total violations"), ("violation_ratio", "Violation ratio")],
+            "NearDuplicateDetectionComponent": [("near_duplicate_ratio", "Near-duplicate ratio"), ("affected_rows", "Affected rows")]
+        }
+
+        for comp_name, metrics in metric_mappings.items():
+            if comp_name in component_summaries:
+                summary = component_summaries[comp_name]
+                comp_lines = []
+                for key, label in metrics:
+                    if key in summary:
+                        value = summary[key]
+                        if isinstance(value, float):
+                            if 'ratio' in key or 'score' in key:
+                                comp_lines.append(f"  • {label}: {value:.1%}")
+                            else:
+                                comp_lines.append(f"  • {label}: {value:.4f}")
+                        elif isinstance(value, dict):
+                            comp_lines.append(f"  • {label}: {value}")
+                        else:
+                            comp_lines.append(f"  • {label}: {value}")
+
+                if comp_lines:
+                    display_name = comp_name.replace("Component", "").replace("Report", "")
+                    lines.append(f"📌 {display_name}")
+                    lines.extend(comp_lines)
+
+        return "\n".join(lines)
+
+    def _generate_pros_cons_prompt(self) -> str:
+        component_summaries = self.result.get("component_summaries", {})
+        dataset_info = self.result["summary"]["dataset_info"]
+
+        metrics = []
+        metrics.append(f"Dataset: {dataset_info['num_rows']} rows, {dataset_info['num_columns']} columns")
+
+        if "ExactDuplicateDetectionComponent" in component_summaries:
+            s = component_summaries["ExactDuplicateDetectionComponent"]
+            metrics.append(f"Duplicates: {s.get('duplicate_ratio', 0):.1%}")
+
+        if "MissingValuesReport" in component_summaries:
+            s = component_summaries["MissingValuesReport"]
+            metrics.append(f"Missing: {s.get('num_columns_with_missing', 0)} columns affected")
+
+        if "OutlierDetectionComponent" in component_summaries:
+            s = component_summaries["OutlierDetectionComponent"]
+            metrics.append(f"Outliers: {s.get('outlier_ratio', 0):.1%}")
+
+        if "LabelNoiseDetectionComponent" in component_summaries:
+            s = component_summaries["LabelNoiseDetectionComponent"]
+            metrics.append(f"Label noise: {s.get('noise_ratio', 0):.1%}")
+
+        if "CompositeQualityScoreComponent" in component_summaries:
+            s = component_summaries["CompositeQualityScoreComponent"]
+            metrics.append(f"Readiness score: {s.get('data_readiness_score', 0):.1%}")
+
+        return ". ".join(metrics)
 
     def get_full_summary(self) -> str:
         if self.result is None:
             raise RuntimeError("analyze() must be called before get_full_summary()")
 
-        lines = [
-            "",
-            "=" * 80,
-            "📊 LLM DATASET QUALITY ASSESSMENT",
-            "=" * 80,
-            self.result["llm_summary"],
-            "=" * 80
-        ]
+        lines = []
+
+        lines.append("=" * 80)
+        lines.append("📊 COMPONENT METRICS OVERVIEW")
+        lines.append("=" * 80)
+        lines.append(self._format_component_metrics())
+        lines.append("")
+
+        if self.llm and self.llm.is_available:
+            try:
+                metrics_summary = self._generate_pros_cons_prompt()
+
+                prompt = f"""Dataset analysis: {metrics_summary}
+
+List exactly:
+✅ STRENGTHS (2-3 bullet points - what's good about this data)
+❌ ISSUES (2-3 bullet points - main problems to address)
+🎯 PRIORITY ACTION (1 sentence - most important fix)
+
+Be concise, no explanations needed."""
+
+                llm_analysis = self.llm.generate(prompt, system_prompt="You are a data quality expert. Be extremely concise. Use bullet points.")
+
+                lines.append("=" * 80)
+                lines.append("🤖 AI QUALITY ASSESSMENT")
+                lines.append("=" * 80)
+                lines.append(llm_analysis)
+                lines.append("=" * 80)
+            except Exception:
+                pass
+
         return "\n".join(lines)
 
     def print_summary(self):
