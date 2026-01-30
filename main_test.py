@@ -354,7 +354,7 @@ class MockLLMDatasetSummaryComponent(MockComponent):
     def __init__(self):
         super().__init__(
             name="LLMDatasetSummaryComponent",
-            justification="Synthesizes all analysis results into a coherent narrative with actionable recommendations.",
+            justification="Synthesizes all analysis results into a coherent overview with factual metrics and AI-powered insights.",
             summary={
                 "total_components_analyzed": 10,
                 "total_issues_detected": 8,
@@ -363,22 +363,50 @@ class MockLLMDatasetSummaryComponent(MockComponent):
             },
             full_summary="""
 ================================================================================
-📋 COMPONENT SUMMARY
+📊 COMPONENT METRICS OVERVIEW
 ================================================================================
-OVERALL QUALITY: MEDIUM (72/100)
+📌 MissingValues
+  • Columns with missing values: 3
 
-KEY FINDINGS:
-✅ No duplicates - data integrity good
-⚠️ Missing values in Cabin (77%), Age (20%)
-⚠️ 28.6% outliers detected (mostly genuine rare cases)
-⚠️ 3.4% potential label noise
+📌 DatasetOverview
+  • Dataset shape: {'rows': 891, 'columns': 12}
 
-PRIORITY ACTIONS:
-1. Handle Cabin column (drop or create has_cabin feature)
-2. Impute Age using Pclass/Fare correlation
-3. Review 30 suspicious survival labels
+📌 ExactDuplicateDetection
+  • Duplicate ratio: 0.0%
+  • Risk level: none
 
-ML READINESS: Ready after preprocessing. Use stratified CV, account for family groups.
+📌 OutlierDetection
+  • Outlier ratio: 28.6%
+
+📌 CategoricalOutlierDetection
+  • Categorical outlier ratio: 28.6%
+
+📌 DistributionModeling
+  • Mean reconstruction error: 0.2725
+  • High error ratio: 11.2%
+
+📌 CompositeQualityScore
+  • Data readiness score: 90.5%
+
+📌 LabelNoiseDetection
+  • Label noise ratio: 3.4%
+  • Suspicious samples: 30
+
+================================================================================
+🤖 AI QUALITY ASSESSMENT
+================================================================================
+✅ STRENGTHS
+• No duplicate records - data integrity maintained
+• High readiness score (90.5%) - suitable for ML
+• Low label noise (3.4%) - labels mostly reliable
+
+❌ ISSUES  
+• High missing rate in Cabin column (77%)
+• Significant outlier ratio (28.6%)
+• Age column needs imputation (20% missing)
+
+🎯 PRIORITY ACTION
+Handle Cabin column first (drop or create has_cabin feature), then impute Age values.
 ================================================================================
 """
         )
