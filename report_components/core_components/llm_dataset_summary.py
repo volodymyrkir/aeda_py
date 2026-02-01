@@ -276,6 +276,85 @@ class LLMDatasetSummaryComponent(ReportComponent):
 
         return ". ".join(metrics)
 
+    def _generate_strengths_weaknesses(self) -> tuple:
+        """Generate strengths and weaknesses based on component results."""
+        component_summaries = self.result.get("component_summaries", {})
+        strengths = []
+        weaknesses = []
+        priority_action = ""
+
+        # Check duplicates
+        if "ExactDuplicateDetectionComponent" in component_summaries:
+            s = component_summaries["ExactDuplicateDetectionComponent"]
+            dup_ratio = s.get('duplicate_ratio', 0)
+            if dup_ratio == 0:
+                strengths.append("No duplicate records - data integrity maintained")
+            elif dup_ratio > 0.05:
+                weaknesses.append(f"High duplicate ratio ({dup_ratio:.1%}) - needs deduplication")
+
+        # Check missing values
+        if "MissingValuesReport" in component_summaries:
+            s = component_summaries["MissingValuesReport"]
+            missing_cols = s.get('num_columns_with_missing', 0)
+            if missing_cols == 0:
+                strengths.append("No missing values - complete dataset")
+            elif missing_cols <= 2:
+                strengths.append(f"Low missingness - only {missing_cols} columns affected")
+            else:
+                weaknesses.append(f"{missing_cols} columns have missing values - imputation needed")
+                if not priority_action:
+                    priority_action = "Handle missing values through imputation or removal"
+
+        # Check outliers
+        if "OutlierDetectionComponent" in component_summaries:
+            s = component_summaries["OutlierDetectionComponent"]
+            outlier_ratio = s.get('outlier_ratio', 0)
+            if outlier_ratio < 0.05:
+                strengths.append(f"Low outlier ratio ({outlier_ratio:.1%}) - clean data distribution")
+            elif outlier_ratio > 0.2:
+                weaknesses.append(f"High outlier ratio ({outlier_ratio:.1%}) - review flagged records")
+
+        # Check label noise
+        if "LabelNoiseDetectionComponent" in component_summaries:
+            s = component_summaries["LabelNoiseDetectionComponent"]
+            noise_ratio = s.get('noise_ratio', 0)
+            if noise_ratio < 0.05:
+                strengths.append(f"Low label noise ({noise_ratio:.1%}) - reliable labels")
+            elif noise_ratio > 0.1:
+                weaknesses.append(f"Significant label noise ({noise_ratio:.1%}) - verify suspicious labels")
+                if not priority_action:
+                    priority_action = "Review and correct potentially mislabeled records"
+
+        # Check quality score
+        if "CompositeQualityScoreComponent" in component_summaries:
+            s = component_summaries["CompositeQualityScoreComponent"]
+            score = s.get('data_readiness_score', 0)
+            if score >= 0.8:
+                strengths.append(f"High readiness score ({score:.0%}) - suitable for ML")
+            elif score < 0.6:
+                weaknesses.append(f"Low readiness score ({score:.0%}) - significant preprocessing needed")
+
+        # Check near duplicates
+        if "NearDuplicateDetectionComponent" in component_summaries:
+            s = component_summaries["NearDuplicateDetectionComponent"]
+            nd_ratio = s.get('near_duplicate_ratio', 0)
+            if nd_ratio > 0.1:
+                weaknesses.append(f"Near-duplicates detected ({nd_ratio:.1%}) - may affect model training")
+
+        # Check relational consistency
+        if "RelationalConsistencyComponent" in component_summaries:
+            s = component_summaries["RelationalConsistencyComponent"]
+            violations = s.get('total_violations', 0)
+            if violations == 0:
+                strengths.append("No consistency violations - logically coherent data")
+            elif violations > 5:
+                weaknesses.append(f"{violations} consistency violations found - data integrity issues")
+
+        if not priority_action and weaknesses:
+            priority_action = "Address the highest-impact issue first based on your ML task requirements"
+
+        return strengths[:3], weaknesses[:3], priority_action
+
     def get_full_summary(self) -> str:
         if self.result is None:
             raise RuntimeError("analyze() must be called before get_full_summary()")
@@ -288,28 +367,27 @@ class LLMDatasetSummaryComponent(ReportComponent):
         lines.append(self._format_component_metrics())
         lines.append("")
 
-        if self.llm and self.llm.is_available:
-            try:
-                metrics_summary = self._generate_pros_cons_prompt()
+        # Generate strengths and weaknesses programmatically
+        strengths, weaknesses, priority_action = self._generate_strengths_weaknesses()
 
-                prompt = f"""Dataset analysis: {metrics_summary}
+        lines.append("=" * 80)
+        lines.append("🤖 AI QUALITY ASSESSMENT")
+        lines.append("=" * 80)
 
-List exactly:
-✅ STRENGTHS (2-3 bullet points - what's good about this data)
-❌ ISSUES (2-3 bullet points - main problems to address)
-🎯 PRIORITY ACTION (1 sentence - most important fix)
+        lines.append("✅ STRENGTHS")
+        for s in strengths:
+            lines.append(f"• {s}")
 
-Be concise, no explanations needed."""
+        lines.append("")
+        lines.append("❌ ISSUES")
+        for w in weaknesses:
+            lines.append(f"• {w}")
 
-                llm_analysis = self.llm.generate(prompt, system_prompt="You are a data quality expert. Be extremely concise. Use bullet points.")
+        lines.append("")
+        lines.append("🎯 PRIORITY ACTION")
+        lines.append(f"• {priority_action}")
 
-                lines.append("=" * 80)
-                lines.append("🤖 AI QUALITY ASSESSMENT")
-                lines.append("=" * 80)
-                lines.append(llm_analysis)
-                lines.append("=" * 80)
-            except Exception:
-                pass
+        lines.append("=" * 80)
 
         return "\n".join(lines)
 

@@ -1,24 +1,3 @@
-"""
-LLM Service Module
-
-This module provides a unified interface for LLM-based explanations in dataset analysis.
-It supports local models via Hugging Face transformers (downloaded on first use).
-
-The service can work offline with local models.
-
-Usage:
-    from utils.llm_service import LLMService
-
-    # Will use local Hugging Face model (singleton - same instance returned)
-    llm = LLMService.get_instance()
-
-    # Or specify a different model on first call
-    llm = LLMService.get_instance(model_name="microsoft/phi-2")
-
-    # Legacy create() still works but returns singleton
-    llm = LLMService.create()
-"""
-
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -28,71 +7,54 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
-# Global singleton instance
 _llm_service_instance: Optional["LLMService"] = None
 
 
 class LLMProvider(Enum):
-    """Supported LLM providers."""
-    LOCAL_HF = "local_hf"  # Local via Hugging Face transformers
-    NONE = "none"  # No LLM available
+    LOCAL_HF = "local_hf"
+    NONE = "none"
 
 
 @dataclass
 class LLMConfig:
     provider: LLMProvider
     model_name: Optional[str] = None
-    max_tokens: int = 256
+    max_tokens: int = 13
     temperature: float = 0.3
     timeout: int = 30
 
 
 class BaseLLMProvider(ABC):
-    """Abstract base class for LLM providers."""
-
     def __init__(self, config: LLMConfig):
         self.config = config
 
     @abstractmethod
-    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
-        """Generate text completion."""
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: Optional[int] = None) -> str:
         pass
 
     @abstractmethod
     def is_available(self) -> bool:
-        """Check if this provider is available."""
         pass
 
     def _format_data_analysis_prompt(
         self,
         component_name: str,
         context_data: Dict[str, Any],
-        question: str
+        question: str,
     ) -> str:
-        """Format a prompt for data analysis explanation."""
         return f"""You are a data quality analyst assistant. Analyze the following information and provide a clear, concise explanation.
+Component: {component_name}
+Context Data:
+{json.dumps(context_data, indent=2, default=str)}
+Question: {question}
+Provide a brief, actionable explanation (2-4 sentences). Focus on:
 
-                Component: {component_name}
-                Context Data:
-                {json.dumps(context_data, indent=2, default=str)}
-                
-                Question: {question}
-                
-                Provide a brief, actionable explanation (2-4 sentences). Focus on:
-                1. What the issue is
-                2. Why it might have occurred
-                3. Potential impact on data quality or ML models"""
+What the issue is
+Why it might have occurred
+Potential impact on data quality or ML models"""
 
 
 class LocalHuggingFaceProvider(BaseLLMProvider):
-    """
-    Local Hugging Face transformers provider.
-
-    Uses a small model like TinyLlama-1.1B-Chat-v1.0 by default (~2GB download, ~1.1B params).
-    First run will download the model automatically (may take several minutes).
-    Requires: pip install transformers torch accelerate
-    """
-
     def __init__(self, config: LLMConfig):
         super().__init__(config)
         self._pipeline = None
@@ -111,28 +73,22 @@ class LocalHuggingFaceProvider(BaseLLMProvider):
 
         model_name = self.config.model_name or "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
-        logger.info(f"Loading local model: {model_name}")
         if torch.cuda.is_available():
             device = "cuda"
             torch_dtype = torch.float16
-            print(f"   Device: CUDA (GPU)")
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             device = "mps"
             torch_dtype = torch.float16
-            print(f"   Device: MPS (Apple Silicon)")
         else:
             device = "cpu"
             torch_dtype = torch.float32
-            print(f"   Device: CPU")
-
-        logger.info(f"Using device: {device}")
 
         self._pipeline = pipeline(
             "text-generation",
             model=model_name,
             dtype=torch_dtype,
             device_map="auto" if device != "cpu" else None,
-            trust_remote_code=True
+            trust_remote_code=True,
         )
 
         if device == "cpu":
@@ -142,68 +98,52 @@ class LocalHuggingFaceProvider(BaseLLMProvider):
         try:
             import torch
             from transformers import pipeline
+
             return True
         except ImportError:
             return False
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: Optional[int] = None) -> str:
         self._load_model()
 
-        formatted = f"<|system|>\n{system_prompt or ''}</s>\n<|user|>\n{prompt}</s>\n<|assistant|>\n"
+        formatted = (
+            f"<|system|>\n{system_prompt or ''}<|end|>\n"
+            f"<|user|>\n{prompt}<|end|>\n"
+            f"<|assistant|>"
+        )
 
         outputs = self._pipeline(
             formatted,
-            max_new_tokens=self.config.max_tokens,
+            max_new_tokens=max_tokens or self.config.max_tokens,
             temperature=self.config.temperature,
             do_sample=True,
-            pad_token_id=self._pipeline.tokenizer.eos_token_id
+            pad_token_id=self._pipeline.tokenizer.eos_token_id,
         )
 
         generated = outputs[0]["generated_text"]
-        response = generated[len(formatted):].strip()
+        response = generated[len(formatted) :].strip()
         return response
 
 
 class LLMService:
-    """
-    Main LLM service class providing unified access to local LLM provider.
-
-    Uses local Hugging Face model by default.
-    Uses singleton pattern - model is loaded once and reused across all calls.
-    """
-
-    SYSTEM_PROMPT = """You are a data quality analyst. Be extremely concise (2 sentences max). No code, no examples. Focus on: what the issue means and how to fix it semantically."""
+    SYSTEM_PROMPT = (
+        "You are a data quality analyst. Be extremely concise (2 sentences max). "
+        "No code, no examples. Focus on: what the issue means and how to fix it semantically."
+    )
 
     def __init__(self, provider: BaseLLMProvider):
         self.provider = provider
         self._enabled = True
 
     @classmethod
-    def get_instance(
-        cls,
-        model_name: Optional[str] = None,
-        **kwargs
-    ) -> "LLMService":
-        """
-        Get the singleton LLM service instance (creates one if it doesn't exist).
-
-        The model is loaded once and reused across all calls, avoiding repeated
-        loading which can be slow.
-
-        Args:
-            model_name: Specific model to use (only used on first call)
-            **kwargs: Additional config options (only used on first call)
-
-        Returns:
-            LLMService singleton instance
-        """
+    def get_instance(cls, model_name: Optional[str] = None, **kwargs) -> "LLMService":
         global _llm_service_instance
 
         if _llm_service_instance is None:
             config = LLMConfig(
                 provider=LLMProvider.LOCAL_HF,
                 model_name=model_name,
-                **kwargs
+                **kwargs,
             )
 
             llm_provider = LocalHuggingFaceProvider(config)
@@ -216,60 +156,35 @@ class LLMService:
         return _llm_service_instance
 
     @classmethod
-    def create(
-        cls,
-        model_name: Optional[str] = None,
-        **kwargs
-    ) -> "LLMService":
-        """
-        Create/get an LLM service instance (uses singleton pattern).
-
-        Note: This is now an alias for get_instance() to maintain backward compatibility.
-
-        Args:
-            model_name: Specific model to use (default: "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-            **kwargs: Additional config options
-
-        Returns:
-            LLMService singleton instance
-        """
+    def create(cls, model_name: Optional[str] = None, **kwargs) -> "LLMService":
         return cls.get_instance(model_name=model_name, **kwargs)
 
     @classmethod
     def reset_instance(cls):
-        """
-        Reset the singleton instance (useful for testing or changing models).
-        Next call to get_instance() will create a new instance.
-        """
         global _llm_service_instance
         _llm_service_instance = None
-        print("🔧 LLM Service singleton reset")
 
     @property
     def is_available(self) -> bool:
-        """Check if LLM service is available and enabled."""
         return self._enabled and self.provider.is_available()
 
     def disable(self):
-        """Disable LLM explanations."""
         self._enabled = False
 
     def enable(self):
-        """Enable LLM explanations."""
         self._enabled = True
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
-        """Generate text using the configured provider."""
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: Optional[int] = None) -> str:
         if not self._enabled:
             return "[LLM explanations disabled]"
 
         try:
             return self.provider.generate(
                 prompt,
-                system_prompt or self.SYSTEM_PROMPT
+                system_prompt or self.SYSTEM_PROMPT,
+                max_tokens,
             )
         except Exception as e:
-            logger.error(f"LLM generation failed: {e}")
             return f"[LLM explanation failed: {str(e)}]"
 
     def explain_outlier(
@@ -277,11 +192,20 @@ class LLMService:
         row_data: Dict[str, Any],
         outlier_score: float,
         contributing_features: Dict[str, float],
-        dataset_context: Optional[str] = None
+        dataset_context: Optional[str] = None,
     ) -> str:
-        relevant_data = {k: row_data[k] for k in list(contributing_features.keys())[:3] if k in row_data}
+        relevant_data = {
+            k: row_data[k]
+            for k in list(contributing_features.keys())[:3]
+            if k in row_data
+        }
 
-        prompt = f"""Outlier detected. Score: {outlier_score:.3f}. Key features: {', '.join(contributing_features.keys())}. Values: {json.dumps(relevant_data, default=str)}. Explain in 2 sentences why this is anomalous."""
+        prompt = (
+            f"Outlier detected. Score: {outlier_score:.3f}. "
+            f"Key features: {', '.join(contributing_features.keys())}. "
+            f"Values: {json.dumps(relevant_data, default=str)}. "
+            f"Explain in 2 sentences why this is anomalous."
+        )
 
         return self.generate(prompt)
 
@@ -291,9 +215,14 @@ class LLMService:
         row_b: Dict[str, Any],
         similarity_score: float,
         matching_columns: List[str],
-        differing_columns: List[str]
+        differing_columns: List[str],
     ) -> str:
-        prompt = f"""Records {similarity_score:.0%} similar. Same: {', '.join(matching_columns[:3])}. Different: {', '.join(differing_columns[:2])}. One sentence: why similar and should merge/keep/investigate?"""
+        prompt = (
+            f"Records {similarity_score:.0%} similar. "
+            f"Same: {', '.join(matching_columns[:3])}. "
+            f"Different: {', '.join(differing_columns[:2])}. "
+            f"One sentence: why similar and should merge/keep/investigate?"
+        )
 
         return self.generate(prompt)
 
@@ -302,9 +231,12 @@ class LLMService:
         violation_type: str,
         affected_columns: List[str],
         example_violations: List[Dict[str, Any]],
-        violation_ratio: float
+        violation_ratio: float,
     ) -> str:
-        prompt = f"""Data consistency issue: {violation_type} in columns {', '.join(affected_columns)}. Affects {violation_ratio:.1%} of rows. In exactly 2 short sentences: 1) What this inconsistency means for data quality. 2) How to fix it (describe approach, no code)."""
+        prompt = (
+            f"{violation_type} issue in {', '.join(affected_columns)} ({violation_ratio:.1%} of rows). "
+            f"One sentence: what it means. One sentence: how to fix semantically."
+        )
 
         return self.generate(prompt)
 
@@ -313,11 +245,18 @@ class LLMService:
         row_data: Dict[str, Any],
         current_label: Any,
         suggested_label: Any,
-        confidence: float
+        confidence: float,
     ) -> str:
-        key_features = {k: v for k, v in list(row_data.items())[:4] if k != 'Name'}
+        key_features = {
+            k: v for k, v in list(row_data.items())[:4] if k != "Name"
+        }
 
-        prompt = f"""Potential mislabel. Current: {current_label}, Suggested: {suggested_label}, Confidence: {confidence:.1%}. Features: {json.dumps(key_features, default=str)}. Explain in 2 sentences why label may be wrong."""
+        prompt = (
+            f"Potential mislabel. Current: {current_label}, "
+            f"Suggested: {suggested_label}, Confidence: {confidence:.1%}. "
+            f"Features: {json.dumps(key_features, default=str)}. "
+            f"Explain in 2 sentences why label may be wrong."
+        )
 
         return self.generate(prompt)
 
@@ -325,53 +264,70 @@ class LLMService:
         self,
         column_name: str,
         detected_distribution: str,
-        anomaly_details: Dict[str, Any]
+        anomaly_details: Dict[str, Any],
     ) -> str:
-        error = anomaly_details.get('reconstruction_error', 0)
-        threshold = anomaly_details.get('threshold', 0)
-        features = anomaly_details.get('contributing_features', {})
+        error = anomaly_details.get("reconstruction_error", 0)
+        threshold = anomaly_details.get("threshold", 0)
+        features = anomaly_details.get("contributing_features", {})
         top_features = dict(list(features.items())[:3])
 
-        prompt = f"""Distribution anomaly in {column_name} ({detected_distribution}). Reconstruction error: {error:.3f} (threshold: {threshold:.3f}). Top deviating features: {json.dumps(top_features, default=str)}. In 2 sentences: why does this record deviate and is it a data error or rare case?"""
+        prompt = (
+            f"Distribution anomaly in {column_name} ({detected_distribution}). "
+            f"Reconstruction error: {error:.3f} (threshold: {threshold:.3f}). "
+            f"Top deviating features: {json.dumps(top_features, default=str)}. "
+            f"In 2 sentences: why does this record deviate and is it a data error or rare case?"
+        )
 
         return self.generate(prompt)
 
     def generate_dataset_summary(
         self,
         component_results: Dict[str, Dict[str, Any]],
-        dataset_info: Dict[str, Any]
+        dataset_info: Dict[str, Any],
     ) -> str:
         condensed_results = {}
+
         for component, data in component_results.items():
             condensed_results[component] = {
-                k: v for k, v in data.items()
-                if k not in ['llm_explanation', 'llm_explanations'] and not isinstance(v, str) or len(str(v)) < 100
+                k: v
+                for k, v in data.items()
+                if k not in {"llm_explanation", "llm_explanations"}
+                and (not isinstance(v, str) or len(v) < 100)
             }
 
-        prompt = f"""Dataset: {dataset_info['num_rows']} rows, {dataset_info['num_columns']} cols. 
-
+        prompt = f"""Dataset: {dataset_info['num_rows']} rows, {dataset_info['num_columns']} cols.
 Analysis findings: {json.dumps(condensed_results, indent=1, default=str)[:800]}
-
 Provide concise assessment:
-1. Overall Data Quality (1-2 sentences - is data ready for ML?)
-2. Top 3 Critical Issues (bullet points)
-3. Key Recommendation (1 sentence - what to fix first)
 
-Focus on actionable insights about data quality, not basic statistics."""
+Overall Data Quality (1-2 sentences - is data ready for ML?)
+Top 3 Critical Issues (bullet points)
+Key Recommendation (1 sentence - what to fix first)
 
-        return self.generate(prompt, system_prompt="You are a data quality expert. Be concise and actionable. Focus on issues and recommendations, not basic statistics.")
+Focus on actionable insights about data quality, not basic statistics.
+"""
+
+        return self.generate(
+            prompt,
+            system_prompt=(
+                "You are a data quality expert. Be concise and actionable. "
+                "Focus on issues and recommendations, not basic statistics."
+            ),
+            max_tokens=300,
+        )
 
     def generate_component_summary(
         self,
         component_name: str,
         metrics: Dict[str, Any],
-        findings: str
+        findings: str,
     ) -> str:
         prompt = f"""Component: {component_name}
 Metrics: {json.dumps(metrics, default=str)}
 Findings: {findings}
+In 2-3 sentences: What does this analysis reveal about data quality? Any concerns or recommendations?
+"""
 
-In 2-3 sentences: What does this analysis reveal about data quality? Any concerns or recommendations?"""
-
-        return self.generate(prompt, system_prompt="You are a data quality analyst. Be brief and actionable.")
-
+        return self.generate(
+            prompt,
+            system_prompt="You are a data quality analyst. Be brief and actionable.",
+        )

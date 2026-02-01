@@ -79,7 +79,8 @@ class HTMLReportGenerator:
         name = self._format_name(component.__class__.__name__)
 
         try:
-            justification = html.escape(component.justify() or "N/A")
+            raw_justification = component.justify() or "N/A"
+            justification = self._format_justification(raw_justification)
         except Exception:
             justification = "Component analysis incomplete"
 
@@ -133,7 +134,7 @@ class HTMLReportGenerator:
 
             <div class="justification">
                 <h3>Component Description</h3>
-                <p>{justification}</p>
+                <div class="justification-content">{justification}</div>
             </div>
 
             <div class="summary">
@@ -309,19 +310,188 @@ class HTMLReportGenerator:
         name = name.replace("Component", "").replace("Report", "")
         return re.sub(r'(?<!^)(?=[A-Z])', ' ', name)
 
+    def _format_justification(self, text: str) -> str:
+        """Convert markdown-style formatting in justifications to HTML."""
+        import re
+
+        # Escape HTML first
+        text = html.escape(text)
+
+        # Convert **bold** to <strong>
+        text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+
+        # Convert *italic* to <em>
+        text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+
+        # Convert `code` to <code>
+        text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+
+        # Split into paragraphs by double newlines
+        paragraphs = re.split(r'\n\s*\n', text)
+
+        formatted_parts = []
+
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+
+            # Check if this paragraph contains numbered list items
+            lines = para.split('\n')
+            list_items = []
+            non_list_lines = []
+
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # Check for numbered list (1. 2. 3.)
+                match = re.match(r'^(\d+)\.\s+(.+)$', line)
+                if match:
+                    list_items.append(match.group(2))
+                else:
+                    # Check for bullet list (- or *)
+                    match = re.match(r'^[-*]\s+(.+)$', line)
+                    if match:
+                        list_items.append(match.group(1))
+                    else:
+                        non_list_lines.append(line)
+
+            # Output non-list content as paragraph
+            if non_list_lines:
+                formatted_parts.append(f'<p>{" ".join(non_list_lines)}</p>')
+
+            # Output list items
+            if list_items:
+                items_html = ''.join([f'<li>{item}</li>' for item in list_items])
+                formatted_parts.append(f'<ol>{items_html}</ol>')
+
+        return ''.join(formatted_parts) if formatted_parts else text
+
     def _format_value(self, value) -> str:
         """Format values for HTML display."""
         if isinstance(value, float):
-            return f"{value:.4f}"
+            if abs(value) < 1:
+                return f"{value:.4f}"
+            return f"{value:.2f}"
         elif isinstance(value, list):
-            if len(value) > 10:
-                return html.escape(str(value[:10])) + f"... ({len(value)} items)"
+            if not value:
+                return "<em>None</em>"
+            # Check if it's a list of dictionaries (example outliers, etc.)
+            if isinstance(value[0], dict):
+                return self._format_examples_list(value)
+            # Check if it's a list of tuples (worst_columns, etc.)
+            elif isinstance(value[0], tuple) and len(value[0]) == 2:
+                return self._format_tuple_list(value)
+            elif len(value) > 5:
+                return html.escape(str(value[:5])) + f"... ({len(value)} items)"
             return html.escape(str(value))
         elif isinstance(value, dict):
             items = [f"<strong>{html.escape(str(k))}:</strong> {html.escape(str(v))}"
                      for k, v in list(value.items())[:10]]
             return "<br>".join(items)
         return html.escape(str(value))
+
+    def _format_examples_list(self, examples: list) -> str:
+        """Format a list of example dictionaries as beautiful HTML cards."""
+        if not examples:
+            return "<em>No examples</em>"
+
+        # Limit to first 5 examples
+        examples = examples[:5]
+
+        html_parts = [f'<div class="examples-container"><span class="examples-count">{len(examples)} example(s)</span>']
+
+        for i, example in enumerate(examples, 1):
+            # Determine the type of example and format accordingly
+            card_content = self._format_single_example(example, i)
+            html_parts.append(card_content)
+
+        html_parts.append('</div>')
+        return ''.join(html_parts)
+
+    def _format_single_example(self, example: dict, index: int) -> str:
+        """Format a single example dictionary as an HTML card."""
+        # Identify key fields for different types of examples
+        row_idx = example.get('row_index', example.get('index', None))
+
+        # Build header
+        if row_idx is not None:
+            header = f"Row {row_idx}"
+        elif 'column' in example:
+            header = f"Column: {example['column']}"
+        else:
+            header = f"Example {index}"
+
+        # Build metrics based on what's in the example
+        metrics = []
+
+        # Common fields to display nicely
+        field_labels = {
+            'outlier_score': ('Score', lambda v: f"{v:.3f}"),
+            'score': ('Score', lambda v: f"{v:.3f}"),
+            'frequency': ('Frequency', lambda v: f"{v:.4f}"),
+            'error': ('Error', lambda v: f"{v:.4f}"),
+            'reconstruction_error': ('Recon. Error', lambda v: f"{v:.4f}"),
+            'similarity': ('Similarity', lambda v: f"{v:.1%}"),
+            'confidence': ('Confidence', lambda v: f"{v:.1%}"),
+            'noise_score': ('Noise Score', lambda v: f"{v:.3f}"),
+            'value': ('Value', lambda v: html.escape(str(v))),
+            'column': ('Column', lambda v: html.escape(str(v))),
+            'narrative': ('Details', lambda v: html.escape(str(v)[:100])),
+            'explanation_narrative': ('Details', lambda v: html.escape(str(v)[:100])),
+        }
+
+        for field, (label, formatter) in field_labels.items():
+            if field in example and example[field] is not None:
+                try:
+                    formatted_val = formatter(example[field])
+                    metrics.append(f'<div class="example-metric"><span class="metric-label">{label}:</span> <span class="metric-value">{formatted_val}</span></div>')
+                except:
+                    pass
+
+        # Handle top_contributing_features specially
+        if 'top_contributing_features' in example:
+            features = example['top_contributing_features']
+            if isinstance(features, dict):
+                top_3 = list(features.items())[:3]
+                features_str = ', '.join([f"{k}: {v:.2f}" for k, v in top_3])
+                metrics.append(f'<div class="example-metric"><span class="metric-label">Top Features:</span> <span class="metric-value">{html.escape(features_str)}</span></div>')
+
+        # Handle matching/differing columns for near-duplicates
+        if 'matching_columns' in example:
+            cols = example['matching_columns'][:3]
+            metrics.append(f'<div class="example-metric"><span class="metric-label">Matching:</span> <span class="metric-value">{html.escape(", ".join(cols))}</span></div>')
+
+        if 'differing_columns' in example:
+            cols = example['differing_columns'][:3]
+            metrics.append(f'<div class="example-metric"><span class="metric-label">Differing:</span> <span class="metric-value">{html.escape(", ".join(cols))}</span></div>')
+
+        metrics_html = ''.join(metrics) if metrics else '<div class="example-metric"><em>No details</em></div>'
+
+        return f'''
+            <div class="example-card">
+                <div class="example-header">{html.escape(header)}</div>
+                <div class="example-body">{metrics_html}</div>
+            </div>
+        '''
+
+    def _format_tuple_list(self, tuples: list) -> str:
+        """Format a list of tuples (like worst_columns) as a nice list."""
+        if not tuples:
+            return "<em>None</em>"
+
+        items = []
+        for name, value in tuples[:5]:
+            if isinstance(value, float):
+                items.append(f'<div class="tuple-item"><strong>{html.escape(str(name))}:</strong> {value:.2%}</div>')
+            else:
+                items.append(f'<div class="tuple-item"><strong>{html.escape(str(name))}:</strong> {html.escape(str(value))}</div>')
+
+        if len(tuples) > 5:
+            items.append(f'<div class="tuple-item"><em>... and {len(tuples) - 5} more</em></div>')
+
+        return '<div class="tuple-list">' + ''.join(items) + '</div>'
 
     def _get_styles(self) -> str:
         return """
@@ -474,11 +644,50 @@ class HTMLReportGenerator:
             letter-spacing: 0.05em;
         }
 
-        .justification p {
+        .justification-content {
             background-color: #eef4ff;
-            padding: 1rem;
+            padding: 1.25rem;
             border-radius: 8px;
             border-left: 4px solid var(--primary);
+            font-size: 0.9rem;
+            line-height: 1.7;
+            color: #334155;
+        }
+
+        .justification-content p {
+            margin: 0 0 0.75rem 0;
+        }
+
+        .justification-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .justification-content ol, .justification-content ul {
+            margin: 0.75rem 0;
+            padding-left: 1.5rem;
+        }
+
+        .justification-content li {
+            margin-bottom: 0.5rem;
+            line-height: 1.6;
+        }
+
+        .justification-content strong {
+            color: #1e40af;
+            font-weight: 600;
+        }
+
+        .justification-content em {
+            color: #4338ca;
+            font-style: italic;
+        }
+
+        .justification-content code {
+            background: #e0e7ff;
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.85em;
         }
 
         table {
@@ -701,6 +910,78 @@ class HTMLReportGenerator:
             white-space: pre-wrap;
             font-size: 0.9rem;
             color: #334155;
+        }
+
+        /* Example cards styling */
+        .examples-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-top: 0.5rem;
+        }
+
+        .examples-count {
+            width: 100%;
+            font-size: 0.8rem;
+            color: #64748b;
+            margin-bottom: 0.25rem;
+        }
+
+        .example-card {
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 0.75rem;
+            min-width: 180px;
+            max-width: 280px;
+            flex: 1;
+        }
+
+        .example-header {
+            font-weight: 600;
+            color: #4338ca;
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+            padding-bottom: 0.4rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .example-body {
+            font-size: 0.8rem;
+        }
+
+        .example-metric {
+            padding: 0.2rem 0;
+            color: #475569;
+        }
+
+        .metric-label {
+            color: #64748b;
+            font-size: 0.75rem;
+        }
+
+        .metric-value {
+            color: #1e293b;
+            font-weight: 500;
+        }
+
+        /* Tuple list styling (for worst_columns etc.) */
+        .tuple-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .tuple-item {
+            font-size: 0.85rem;
+            padding: 0.25rem 0.5rem;
+            background: #f8fafc;
+            border-radius: 4px;
+            border-left: 3px solid #6366f1;
+        }
+
+        .tuple-item strong {
+            color: #4338ca;
         }
 
         footer {
