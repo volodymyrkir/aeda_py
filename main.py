@@ -1,3 +1,4 @@
+import datetime
 import os
 import webbrowser
 
@@ -23,16 +24,16 @@ def main():
     context = AnalysisContext(dataset)
 
     report = Report()
-    report.add_component(MissingValuesReport(context))
     report.add_component(DatasetOverviewComponent(context))
+    report.add_component(MissingValuesReport(context))
     report.add_component(ExactDuplicateDetectionComponent(context))
+    report.add_component(NearDuplicateDetectionComponent(context))
     report.add_component(OutlierDetectionComponent(context))
     report.add_component(CategoricalOutlierDetectionComponent(context))
-    report.add_component(DistributionModelingComponent(context))
-    report.add_component(CompositeQualityScoreComponent(context))
     report.add_component(LabelNoiseDetectionComponent(context, 'Survived'))
     report.add_component(RelationalConsistencyComponent(context))
-    report.add_component(NearDuplicateDetectionComponent(context))
+    report.add_component(DistributionModelingComponent(context))
+    report.add_component(CompositeQualityScoreComponent(context))
     report.add_component(LLMDatasetSummaryComponent(context))
 
     report.run()
@@ -42,8 +43,7 @@ def main():
 
     webbrowser.open('file://' + os.path.realpath(report_path))
 
-    print(f"\n✅ Report generated: {report_path}")
-    print("Click 'Download as PDF' button in the browser to save as PDF")
+    print(f'\n✅ Report generated: {report_path} - {datetime.datetime.now().strftime("H%M")}')
 
 if __name__ == "__main__":
     main()

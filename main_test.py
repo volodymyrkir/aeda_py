@@ -259,7 +259,25 @@ class MockLabelNoiseDetectionComponent(MockComponent):
     def __init__(self):
         super().__init__(
             name="LabelNoiseDetectionComponent",
-            justification="Identifies potentially mislabeled records that could harm model training.",
+            justification=(
+                "This component implements the Confident Learning framework (Northcutt et al., 2021) "
+                "for principled label noise detection. The methodology is grounded in the following "
+                "theoretical foundations:\n\n"
+                "1. **Joint Distribution Estimation**: We estimate Q(ŷ, y*), the joint distribution "
+                "of noisy observed labels ŷ and latent true labels y*, using out-of-fold predictions "
+                "to prevent information leakage.\n\n"
+                "2. **Noise Transition Matrix**: The matrix T where T[i,j] = P(ŷ=j | y*=i) characterizes "
+                "the label corruption process, enabling noise type categorization (uniform, class-conditional, "
+                "or instance-dependent).\n\n"
+                "3. **Calibrated Ensemble Probabilities**: We use a diverse ensemble of classifiers "
+                "(Random Forest, Gradient Boosting, Logistic Regression, MLP) with isotonic calibration "
+                "to obtain robust probability estimates.\n\n"
+                "4. **Statistical Validation**: Permutation testing provides p-values assessing whether "
+                "detected noise exceeds what would occur by chance, following the framework of "
+                "Ojala & Garriga (2010).\n\n"
+                "This approach decouples epistemic uncertainty (model uncertainty) from aleatoric noise "
+                "(inherent label ambiguity), providing actionable insights for data cleaning."
+            ),
             summary={
                 "label_column": "Survived",
                 "noise_ratio": 0.034,
@@ -400,31 +418,34 @@ class MockLLMDatasetSummaryComponent(MockComponent):
 • High readiness score (90.5%) - suitable for ML
 • Low label noise (3.4%) - labels mostly reliable
 
-❌ ISSUES  
+❌ ISSUES
 • High missing rate in Cabin column (77%)
 • Significant outlier ratio (28.6%)
 • Age column needs imputation (20% missing)
 
 🎯 PRIORITY ACTION
-Handle Cabin column first (drop or create has_cabin feature), then impute Age values.
+• Handle Cabin column first (drop or create has_cabin feature), then impute Age values.
 ================================================================================
 """
         )
 
 
 def main():
-    # Create mock components (no real analysis needed)
+    # Components in order:
+    # 1) Dataset Overview, 2) Missing Values, 3) Exact Duplicates, 4) Near Duplicates,
+    # 5) Outliers, 6) Categorical Outliers, 7) Label Noise, 8) Relational Consistency,
+    # 9) Distribution Modeling, 10) Composite Quality, 11) Dataset Summary
     components = [
-        MockMissingValuesReport(),
         MockDatasetOverviewComponent(),
+        MockMissingValuesReport(),
         MockExactDuplicateComponent(),
+        MockNearDuplicateDetectionComponent(),
         MockOutlierDetectionComponent(),
         MockCategoricalOutlierComponent(),
-        MockDistributionModelingComponent(),
-        MockCompositeQualityScoreComponent(),
         MockLabelNoiseDetectionComponent(),
         MockRelationalConsistencyComponent(),
-        MockNearDuplicateDetectionComponent(),
+        MockDistributionModelingComponent(),
+        MockCompositeQualityScoreComponent(),
         MockLLMDatasetSummaryComponent(),
     ]
 
