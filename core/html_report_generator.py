@@ -418,8 +418,13 @@ class HTMLReportGenerator:
         # Build header
         if row_idx is not None:
             header = f"Row {row_idx}"
+        elif 'constraint_type' in example:
+            ctype = str(example['constraint_type']).replace('_', ' ').title()
+            header = f"{ctype}"
         elif 'column' in example:
             header = f"Column: {example['column']}"
+        elif 'determinant_value' in example:
+            header = f"Example {index}"
         else:
             header = f"Example {index}"
 
@@ -440,13 +445,33 @@ class HTMLReportGenerator:
             'column': ('Column', lambda v: html.escape(str(v))),
             'narrative': ('Details', lambda v: html.escape(str(v)[:100])),
             'explanation_narrative': ('Details', lambda v: html.escape(str(v)[:100])),
+            # Relational consistency fields
+            'constraint_type': ('Type', lambda v: html.escape(str(v).replace('_', ' ').title())),
+            'description': ('Description', lambda v: html.escape(str(v)[:80])),
+            'violation_count': ('Violations', lambda v: str(v)),
+            'violation_ratio': ('Ratio', lambda v: f"{v:.1%}" if isinstance(v, float) else str(v)),
+            'severity': ('Severity', lambda v: html.escape(str(v).title())),
+            'recommendation': ('Fix', lambda v: html.escape(str(v)[:80])),
+            'determinant_value': ('Determinant', lambda v: html.escape(str(v))),
+            'dependent_values': ('Dependent Values', lambda v: html.escape(str(v)[:50])),
+            # Other common fields
+            'row_indices': ('Rows', lambda v: html.escape(str(v[:5])) if v else None),
+            'affected_columns': ('Columns', lambda v: html.escape(', '.join(v)) if v and isinstance(v, list) else None),
+            'current_label': ('Current', lambda v: html.escape(str(v))),
+            'suggested_label': ('Suggested', lambda v: html.escape(str(v))),
         }
 
+        # Skip fields that shouldn't be displayed directly
+        skip_fields = {'example_violations', 'llm_explanation', 'row_indices'}
+
         for field, (label, formatter) in field_labels.items():
+            if field in skip_fields:
+                continue
             if field in example and example[field] is not None:
                 try:
                     formatted_val = formatter(example[field])
-                    metrics.append(f'<div class="example-metric"><span class="metric-label">{label}:</span> <span class="metric-value">{formatted_val}</span></div>')
+                    if formatted_val is not None:
+                        metrics.append(f'<div class="example-metric"><span class="metric-label">{label}:</span> <span class="metric-value">{formatted_val}</span></div>')
                 except:
                     pass
 

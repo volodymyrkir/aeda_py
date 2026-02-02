@@ -947,22 +947,6 @@ class RelationalConsistencyComponent(ReportComponent):
             "recommendation": v.recommendation
         }
 
-        if generate_llm and self.llm:
-            try:
-                llm_explanation = self.llm.explain_consistency_violation(
-                    violation_type=v.constraint_type.value,
-                    affected_columns=v.affected_columns,
-                    example_violations=v.example_violations[:1],
-                    violation_ratio=v.violation_ratio
-                )
-                result["llm_explanation"] = llm_explanation
-                self.llm_explanations.append({
-                    "type": "violation",
-                    "constraint_type": v.constraint_type.value,
-                    "explanation": llm_explanation
-                })
-            except Exception:
-                pass
 
         return result
 
@@ -1063,15 +1047,6 @@ class RelationalConsistencyComponent(ReportComponent):
 
         lines = []
 
-        if self.llm_explanations:
-            lines.append(f"\n{'='*80}")
-            lines.append("🤖 LLM EXAMPLE EXPLANATIONS")
-            lines.append(f"{'='*80}")
-            for i, expl in enumerate(self.llm_explanations, 1):
-                lines.append(f"\n{i}. {expl['constraint_type'].upper()}")
-                lines.append(f"   {expl['explanation']}")
-            lines.append("")
-
         if self.llm:
             try:
                 summary_data = self.summarize()
@@ -1083,11 +1058,12 @@ class RelationalConsistencyComponent(ReportComponent):
                     },
                     findings=f"Found {summary_data['total_violations']} consistency violations, score: {summary_data['overall_consistency_score']:.2f}"
                 )
-                lines.append(f"{'='*80}")
-                lines.append("📋 COMPONENT SUMMARY")
-                lines.append(f"{'='*80}")
-                lines.append(component_summary)
-                lines.append(f"{'='*80}\n")
+                if component_summary:
+                    lines.append(f"{'='*80}")
+                    lines.append("📋 COMPONENT SUMMARY")
+                    lines.append(f"{'='*80}")
+                    lines.append(component_summary)
+                    lines.append(f"{'='*80}\n")
             except Exception:
                 pass
 

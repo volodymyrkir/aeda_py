@@ -19,7 +19,7 @@ class LLMProvider(Enum):
 class LLMConfig:
     provider: LLMProvider
     model_name: Optional[str] = None
-    max_tokens: int = 13
+    max_tokens: int = 256
     temperature: float = 0.3
     timeout: int = 30
 
@@ -47,7 +47,7 @@ Component: {component_name}
 Context Data:
 {json.dumps(context_data, indent=2, default=str)}
 Question: {question}
-Provide a brief, actionable explanation (2-4 sentences). Focus on:
+Provide a concise but complete explanation (aim for 2-4 sentences). Focus on:
 
 What the issue is
 Why it might have occurred
@@ -126,10 +126,7 @@ class LocalHuggingFaceProvider(BaseLLMProvider):
 
 
 class LLMService:
-    SYSTEM_PROMPT = (
-        "You are a data quality analyst. Be extremely concise (2 sentences max). "
-        "No code, no examples. Focus on: what the issue means and how to fix it semantically."
-    )
+    SYSTEM_PROMPT = "You are a data quality specialist. Answer in exactly 2 sentences, max 25 words total. State only the cause. No lists. No code. No examples."
 
     def __init__(self, provider: BaseLLMProvider):
         self.provider = provider
@@ -194,20 +191,12 @@ class LLMService:
         contributing_features: Dict[str, float],
         dataset_context: Optional[str] = None,
     ) -> str:
-        relevant_data = {
-            k: row_data[k]
-            for k in list(contributing_features.keys())[:3]
-            if k in row_data
-        }
-
-        prompt = (
-            f"Outlier detected. Score: {outlier_score:.3f}. "
-            f"Key features: {', '.join(contributing_features.keys())}. "
-            f"Values: {json.dumps(relevant_data, default=str)}. "
-            f"Explain in 2 sentences why this is anomalous."
-        )
-
-        return self.generate(prompt)
+        top_features = list(contributing_features.keys())[:3]
+        values = {k: row_data.get(k, "?") for k in top_features if k in row_data}
+        values_str = ", ".join([f"{k}={v}" for k, v in list(values.items())[:3]])
+        ctx = f" ({dataset_context})" if dataset_context else ""
+        prompt = f"Outlier{ctx}. Values: {values_str}. Score: {outlier_score:.2f}. Why is this unusual? 2 sentences, max 25 words."
+        return self.generate(prompt, max_tokens=150)
 
     def explain_near_duplicate(
         self,
@@ -217,28 +206,15 @@ class LLMService:
         matching_columns: List[str],
         differing_columns: List[str],
     ) -> str:
-        prompt = (
-            f"Records {similarity_score:.0%} similar. "
-            f"Same: {', '.join(matching_columns[:3])}. "
-            f"Different: {', '.join(differing_columns[:2])}. "
-            f"One sentence: why similar and should merge/keep/investigate?"
-        )
+        diffs = []
+        for col in differing_columns[:2]:
+            val_a = row_a.get(col, "?")
+            val_b = row_b.get(col, "?")
+            diffs.append(f"{col}: {val_a} vs {val_b}")
+        diff_str = "; ".join(diffs) if diffs else "minor differences"
+        prompt = f"{similarity_score:.0%} similar records. Differences: {diff_str}. Why duplicates? 2 sentences, max 25 words."
+        return self.generate(prompt, max_tokens=100)
 
-        return self.generate(prompt)
-
-    def explain_consistency_violation(
-        self,
-        violation_type: str,
-        affected_columns: List[str],
-        example_violations: List[Dict[str, Any]],
-        violation_ratio: float,
-    ) -> str:
-        prompt = (
-            f"{violation_type} issue in {', '.join(affected_columns)} ({violation_ratio:.1%} of rows). "
-            f"One sentence: what it means. One sentence: how to fix semantically."
-        )
-
-        return self.generate(prompt)
 
     def explain_label_noise(
         self,
@@ -247,18 +223,11 @@ class LLMService:
         suggested_label: Any,
         confidence: float,
     ) -> str:
-        key_features = {
-            k: v for k, v in list(row_data.items())[:4] if k != "Name"
-        }
-
-        prompt = (
-            f"Potential mislabel. Current: {current_label}, "
-            f"Suggested: {suggested_label}, Confidence: {confidence:.1%}. "
-            f"Features: {json.dumps(key_features, default=str)}. "
-            f"Explain in 2 sentences why label may be wrong."
-        )
-
-        return self.generate(prompt)
+        key_vals = {k: v for k, v in list(row_data.items())[:5] if k not in ["Name", "name"]}
+        vals_str = ", ".join([f"{k}={v}" for k, v in key_vals.items()])
+        noise_level = "high" if confidence > 0.8 else "moderate" if confidence > 0.5 else "low"
+        prompt = f"Data row: {vals_str}. Current label: {current_label}. Noise level: {noise_level}. Why might this label be incorrect? 2 sentences, max 25 words."
+        return self.generate(prompt, max_tokens=100)
 
     def explain_distribution_anomaly(
         self,
@@ -267,59 +236,38 @@ class LLMService:
         anomaly_details: Dict[str, Any],
     ) -> str:
         error = anomaly_details.get("reconstruction_error", 0)
-        threshold = anomaly_details.get("threshold", 0)
         features = anomaly_details.get("contributing_features", {})
-        top_features = dict(list(features.items())[:3])
-
-        prompt = (
-            f"Distribution anomaly in {column_name} ({detected_distribution}). "
-            f"Reconstruction error: {error:.3f} (threshold: {threshold:.3f}). "
-            f"Top deviating features: {json.dumps(top_features, default=str)}. "
-            f"In 2 sentences: why does this record deviate and is it a data error or rare case?"
-        )
-
-        return self.generate(prompt)
+        row_data = anomaly_details.get("row_data", {})
+        top_features = list(features.keys())[:3]
+        values_str = ", ".join([f"{f}={row_data.get(f, '?')}" for f in top_features if f in row_data])
+        prompt = f"Data anomaly with reconstruction error {error:.3f}. Values: {values_str}. Why does this row deviate from normal patterns? 2 sentences, max 25 words."
+        return self.generate(prompt, max_tokens=100)
 
     def generate_dataset_summary(
         self,
         component_results: Dict[str, Dict[str, Any]],
         dataset_info: Dict[str, Any],
     ) -> str:
-        condensed_results = {}
+        issues = []
+        for comp, data in component_results.items():
+            if "outlier_ratio" in data and data["outlier_ratio"] > 0.1:
+                issues.append(f"{data['outlier_ratio']:.0%} outliers")
+            if "noise_ratio" in data and data["noise_ratio"] > 0.05:
+                issues.append(f"{data['noise_ratio']:.0%} noisy labels")
+            if "duplicate_ratio" in data and data["duplicate_ratio"] > 0:
+                issues.append(f"{data['duplicate_ratio']:.0%} duplicates")
+            if "num_columns_with_missing" in data and data["num_columns_with_missing"] > 0:
+                issues.append(f"{data['num_columns_with_missing']} cols missing")
 
-        for component, data in component_results.items():
-            condensed_results[component] = {
-                k: v
-                for k, v in data.items()
-                if k not in {"llm_explanation", "llm_explanations"}
-                and (not isinstance(v, str) or len(v) < 100)
-            }
-
-        prompt = f"""Dataset: {dataset_info['num_rows']} rows, {dataset_info['num_columns']} cols.
-Analysis findings: {json.dumps(condensed_results, indent=1, default=str)[:800]}
-Provide concise assessment:
-
-Overall Data Quality (1-2 sentences - is data ready for ML?)
-Top 3 Critical Issues (bullet points)
-Key Recommendation (1 sentence - what to fix first)
-
-Focus on actionable insights about data quality, not basic statistics.
-"""
-
-        return self.generate(
-            prompt,
-            system_prompt=(
-                "You are a data quality expert. Be concise and actionable. "
-                "Focus on issues and recommendations, not basic statistics."
-            ),
-            max_tokens=300,
-        )
+        issues_str = ", ".join(issues[:3]) if issues else "no major issues"
+        prompt = f"Dataset has: {issues_str}. Is it ML-ready? What to fix first? 3 sentences max."
+        return self.generate(prompt, max_tokens=80)
 
     def generate_component_summary(
-        self,
-        component_name: str,
-        metrics: Dict[str, Any],
-        findings: str,
+            self,
+            component_name: str,
+            metrics: Dict[str, Any],
+            findings: str,
     ) -> str:
         prompt = f"""Component: {component_name}
 Metrics: {json.dumps(metrics, default=str)}
