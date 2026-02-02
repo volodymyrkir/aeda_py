@@ -20,6 +20,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
 import warnings
+import html
 
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
@@ -476,6 +477,8 @@ class LabelNoiseDetectionComponent(ReportComponent):
             self.context.shared_artifacts["label_noise_ratio"] = noise_ratio
             self.context.shared_artifacts["label_noise_scores"] = noise_scores
             self.context.shared_artifacts["noise_transition_matrix"] = transition_matrix
+            self.context.shared_artifacts["label_noise_pred_probs"] = pred_probs
+            self.context.shared_artifacts["label_noise_labels"] = labels
 
             self.result = {
                 "noise_indices": noise_indices,
@@ -545,37 +548,107 @@ class LabelNoiseDetectionComponent(ReportComponent):
 
         if self.llm and len(self._result.noise_indices) > 0:
             df = self.context.dataset.df
+            pred_probs = self.context.shared_artifacts.get("label_noise_pred_probs")
+            labels = list(self._result.per_class_noise_rates.keys())
+            transition_matrix = self._result.noise_transition_matrix
+
             for idx in self._result.noise_indices[:NUM_EXAMPLES_LLM]:
                 try:
                     row_data = df.iloc[idx].to_dict()
                     current_label = row_data.get(self.target_column)
-                    suggested_label = "uncertain"
-                    confidence = self._result.noise_scores[idx]
+                    current_label_idx = labels.index(str(current_label)) if str(current_label) in labels else None
+
+                    # Get model's predicted label and probabilities from learned data
+                    model_prediction = None
+                    model_confidence = None
+                    current_label_prob = None
+                    if pred_probs is not None and idx < len(pred_probs):
+                        probs = pred_probs[idx]
+                        predicted_idx = int(np.argmax(probs))
+                        if predicted_idx < len(labels):
+                            model_prediction = labels[predicted_idx]
+                            model_confidence = float(probs[predicted_idx])
+                        # Get probability for current label
+                        if current_label_idx is not None and current_label_idx < len(probs):
+                            current_label_prob = float(probs[current_label_idx])
+
+                    # Get class noise rate from learned per-class rates
+                    class_noise_rate = self._result.per_class_noise_rates.get(str(current_label))
+
+                    # Get confused classes from transition matrix
+                    confused_with = None
+                    if current_label_idx is not None and transition_matrix.size > 0:
+                        row = transition_matrix[current_label_idx] if current_label_idx < len(transition_matrix) else None
+                        if row is not None:
+                            confused_indices = np.argsort(row)[::-1][1:3]  # Top 2 classes it's confused with
+                            confused_with = [labels[i] for i in confused_indices if i < len(labels) and row[i] > 0.05]
 
                     explanation = self.llm.explain_label_noise(
                         row_data=row_data,
                         current_label=current_label,
-                        suggested_label=suggested_label,
-                        confidence=confidence
+                        suggested_label=model_prediction or "uncertain",
+                        confidence=self._result.noise_scores[idx],
+                        model_prediction=model_prediction,
+                        model_confidence=model_confidence,
+                        current_label_prob=current_label_prob,
+                        class_noise_rate=class_noise_rate,
+                        confused_with=confused_with
                     )
+
+                    # Capture row features for display (exclude likely identifiers dynamically)
+                    row_features = {}
+                    for col in df.columns:
+                        # Skip columns that are likely identifiers:
+                        # - Very high cardinality (>90% unique values)
+                        # - Column name contains common identifier patterns
+                        col_lower = col.lower()
+                        is_likely_id = (
+                            'id' in col_lower or
+                            'name' in col_lower or
+                            'ticket' in col_lower or
+                            df[col].nunique() / len(df) > 0.9  # >90% unique = likely identifier
+                        )
+                        if not is_likely_id:
+                            val = row_data.get(col)
+                            if val is not None and not (isinstance(val, float) and np.isnan(val)):
+                                row_features[col] = val
+
                     llm_explanations.append({
                         "row_index": idx,
                         "current_label": current_label,
                         "noise_score": round(float(self._result.noise_scores[idx]), 4),
+                        "row_features": row_features,
                         "llm_explanation": explanation
                     })
                 except Exception:
                     pass
 
         if llm_explanations:
-            lines.append(f"\n{'='*80}")
+            # Generate HTML cards for each suspicious row
+            cards_html = []
+            for expl in llm_explanations:
+                # Build feature table rows
+                feature_rows = []
+                for col, val in expl.get('row_features', {}).items():
+                    escaped_col = html.escape(str(col))
+                    escaped_val = html.escape(str(val))
+                    feature_rows.append(f"<tr><td class='ln-key'>{escaped_col}</td><td class='ln-val'>{escaped_val}</td></tr>")
+
+                features_table = ''.join(feature_rows)
+                escaped_label = html.escape(str(expl['current_label']))
+                escaped_explanation = html.escape(str(expl['llm_explanation']))
+
+                card = f"""<div class='ln-card'>
+                    <div class='ln-title'>Row {expl['row_index']} · Label: {escaped_label}</div>
+                    <div class='ln-meta'>Noise Score: {expl['noise_score']}</div>
+                    <table class='ln-table'>{features_table}</table>
+                    <div class='ln-exp'>{escaped_explanation}</div>
+                </div>"""
+                cards_html.append(card)
+
+            grid_html = "<div class='ln-grid'>" + ''.join(cards_html) + "</div>"
             lines.append("🤖 LLM EXAMPLE EXPLANATIONS")
-            lines.append(f"{'='*80}")
-            for i, expl in enumerate(llm_explanations, 1):
-                lines.append(f"\n{i}. Row {expl['row_index']} - Label: {expl['current_label']}")
-                lines.append(f"   Noise Score: {expl['noise_score']}")
-                lines.append(f"   {expl['llm_explanation']}")
-            lines.append("")
+            lines.append(grid_html)
 
         if self.llm:
             try:

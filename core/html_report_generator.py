@@ -189,7 +189,10 @@ class HTMLReportGenerator:
         if not llm_section and not summary_section and full_summary.strip():
             summary_section = full_summary
 
-        llm_section = html.escape(llm_section.strip())
+        # Only escape if the content doesn't already contain HTML tags
+        llm_section = llm_section.strip()
+        if '<div' not in llm_section and '<table' not in llm_section:
+            llm_section = html.escape(llm_section)
 
         if is_dataset_summary and summary_section:
             summary_section = self._format_metrics_as_html(summary_section.strip())
@@ -1044,6 +1047,73 @@ class HTMLReportGenerator:
             .download-btn {
                 display: none;
             }
+        }
+
+        /* Label noise cards */
+        .ln-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        .ln-card {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-left: 4px solid #ef4444;
+            border-radius: 10px;
+            padding: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+
+        .ln-title {
+            font-weight: 700;
+            color: #b91c1c;
+            margin-bottom: 0.4rem;
+            font-size: 0.95rem;
+        }
+
+        .ln-meta {
+            font-size: 0.85rem;
+            color: #64748b;
+            margin-bottom: 0.6rem;
+            padding-bottom: 0.4rem;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .ln-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 0.6rem;
+            font-size: 0.85rem;
+        }
+
+        .ln-table td {
+            padding: 0.3rem 0.4rem;
+            border-bottom: 1px solid #f1f5f9;
+            text-align: left;
+        }
+
+        .ln-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .ln-key {
+            color: #64748b;
+            font-weight: 600;
+            width: 40%;
+        }
+
+        .ln-val {
+            color: #1e293b;
+        }
+
+        .ln-exp {
+            font-size: 0.85rem;
+            color: #334155;
+            line-height: 1.5;
+            padding-top: 0.4rem;
+            border-top: 1px solid #f1f5f9;
         }
         """
 

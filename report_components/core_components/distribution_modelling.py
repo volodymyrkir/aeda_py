@@ -79,6 +79,7 @@ class DistributionModelingComponent(ReportComponent):
         self.max_explain_rows = max_explain_rows
         self.max_explain_features = max_explain_features
         self.llm_explanations = []
+        self.feature_means = {}
 
     def analyze(self):
         df = self.context.dataset.df
@@ -131,6 +132,9 @@ class DistributionModelingComponent(ReportComponent):
         if len(X) < 10:
             self.result = self._empty_result("Too few complete rows after handling missing values")
             return
+
+        # Store feature means for LLM explanations (before scaling)
+        self.feature_means = {col: float(X[col].mean()) for col in numeric_cols}
 
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
@@ -198,7 +202,7 @@ class DistributionModelingComponent(ReportComponent):
         threshold = np.percentile(reconstruction_error, self.threshold_percentile)
 
         explanations = self._explain_high_errors(
-            reconstruction_error, per_feature_errors, threshold, numeric_cols
+            reconstruction_error, per_feature_errors, threshold, numeric_cols, self.feature_means
         )
 
         self.result = {
@@ -219,7 +223,8 @@ class DistributionModelingComponent(ReportComponent):
             errors: np.ndarray,
             per_feature_errors: np.ndarray,
             threshold: float,
-            feature_names: List[str]
+            feature_names: List[str],
+            feature_means: Dict[str, float]
     ) -> List[Dict[str, Any]]:
         df = self.context.dataset.df
         high_error_indices = np.where(errors >= threshold)[0][:self.max_explain_rows]
@@ -239,6 +244,7 @@ class DistributionModelingComponent(ReportComponent):
 
             if i < NUM_EXAMPLES_LLM and self.llm:
                 try:
+                    row_data = df.iloc[idx][feature_names].to_dict()
                     llm_explanation = self.llm.explain_distribution_anomaly(
                         column_name="multivariate_distribution",
                         detected_distribution="autoencoder_reconstruction",
@@ -246,7 +252,8 @@ class DistributionModelingComponent(ReportComponent):
                             "reconstruction_error": float(errors[idx]),
                             "threshold": float(threshold),
                             "contributing_features": contributions,
-                            "row_data": df.iloc[idx][feature_names].to_dict()
+                            "row_data": row_data,
+                            "feature_means": feature_means
                         }
                     )
                     explanation_entry["llm_explanation"] = llm_explanation

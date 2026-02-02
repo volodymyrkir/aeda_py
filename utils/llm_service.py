@@ -222,12 +222,35 @@ class LLMService:
         current_label: Any,
         suggested_label: Any,
         confidence: float,
+        model_prediction: Optional[Any] = None,
+        model_confidence: Optional[float] = None,
+        current_label_prob: Optional[float] = None,
+        class_noise_rate: Optional[float] = None,
+        confused_with: Optional[List[str]] = None,
     ) -> str:
-        key_vals = {k: v for k, v in list(row_data.items())[:5] if k not in ["Name", "name"]}
-        vals_str = ", ".join([f"{k}={v}" for k, v in key_vals.items()])
-        noise_level = "high" if confidence > 0.8 else "moderate" if confidence > 0.5 else "low"
-        prompt = f"Data row: {vals_str}. Current label: {current_label}. Noise level: {noise_level}. Why might this label be incorrect? 2 sentences, max 25 words."
-        return self.generate(prompt, max_tokens=100)
+        # Build factual context from actual model predictions
+        facts = []
+
+        # Fact 1: Model's prediction vs current label with actual probabilities
+        if model_prediction is not None and str(model_prediction) != str(current_label):
+            if model_confidence is not None and current_label_prob is not None:
+                facts.append(f"Model assigns {model_confidence:.0%} probability to class {model_prediction}, but only {current_label_prob:.0%} to current label {current_label}")
+            else:
+                facts.append(f"Model predicts class {model_prediction}, not {current_label}")
+
+        # Fact 2: Class-level noise rate
+        if class_noise_rate is not None and class_noise_rate > 0.1:
+            facts.append(f"Class {current_label} has {class_noise_rate:.0%} overall noise rate in dataset")
+
+        # Fact 3: Common confusions from transition matrix
+        if confused_with and len(confused_with) > 0:
+            facts.append(f"Class {current_label} is frequently mislabeled as {confused_with[0]}")
+
+        if not facts:
+            return f"Label {current_label} flagged as potentially noisy based on ensemble classifier disagreement."
+
+        # Return factual summary without asking LLM to hallucinate
+        return " ".join(facts)
 
     def explain_distribution_anomaly(
         self,
@@ -236,12 +259,25 @@ class LLMService:
         anomaly_details: Dict[str, Any],
     ) -> str:
         error = anomaly_details.get("reconstruction_error", 0)
+        threshold = anomaly_details.get("threshold", 0)
         features = anomaly_details.get("contributing_features", {})
         row_data = anomaly_details.get("row_data", {})
+        feature_means = anomaly_details.get("feature_means", {})
+
         top_features = list(features.keys())[:3]
-        values_str = ", ".join([f"{f}={row_data.get(f, '?')}" for f in top_features if f in row_data])
-        prompt = f"Data anomaly with reconstruction error {error:.3f}. Values: {values_str}. Why does this row deviate from normal patterns? 2 sentences, max 25 words."
-        return self.generate(prompt, max_tokens=100)
+        deviations = []
+        for f in top_features:
+            val = row_data.get(f)
+            mean = feature_means.get(f)
+            if val is not None and mean is not None:
+                deviations.append(f"{f}={val:.2f} (avg={mean:.2f})")
+            elif val is not None:
+                deviations.append(f"{f}={val}")
+
+        dev_str = ", ".join(deviations) if deviations else "multiple features"
+        severity = "severe" if error > threshold * 1.5 else "moderate"
+        prompt = f"{severity.title()} anomaly (error {error:.3f}, threshold {threshold:.3f}). Deviations: {dev_str}. Why unusual? 2 sentences, max 25 words."
+        return self.generate(prompt, max_tokens=150)
 
     def generate_dataset_summary(
         self,
