@@ -189,7 +189,10 @@ class HTMLReportGenerator:
         if not llm_section and not summary_section and full_summary.strip():
             summary_section = full_summary
 
-        llm_section = html.escape(llm_section.strip())
+        # Only escape if the content doesn't already contain HTML tags
+        llm_section = llm_section.strip()
+        if '<div' not in llm_section and '<table' not in llm_section:
+            llm_section = html.escape(llm_section)
 
         if is_dataset_summary and summary_section:
             summary_section = self._format_metrics_as_html(summary_section.strip())
@@ -418,8 +421,13 @@ class HTMLReportGenerator:
         # Build header
         if row_idx is not None:
             header = f"Row {row_idx}"
+        elif 'constraint_type' in example:
+            ctype = str(example['constraint_type']).replace('_', ' ').title()
+            header = f"{ctype}"
         elif 'column' in example:
             header = f"Column: {example['column']}"
+        elif 'determinant_value' in example:
+            header = f"Example {index}"
         else:
             header = f"Example {index}"
 
@@ -440,13 +448,33 @@ class HTMLReportGenerator:
             'column': ('Column', lambda v: html.escape(str(v))),
             'narrative': ('Details', lambda v: html.escape(str(v)[:100])),
             'explanation_narrative': ('Details', lambda v: html.escape(str(v)[:100])),
+            # Relational consistency fields
+            'constraint_type': ('Type', lambda v: html.escape(str(v).replace('_', ' ').title())),
+            'description': ('Description', lambda v: html.escape(str(v)[:80])),
+            'violation_count': ('Violations', lambda v: str(v)),
+            'violation_ratio': ('Ratio', lambda v: f"{v:.1%}" if isinstance(v, float) else str(v)),
+            'severity': ('Severity', lambda v: html.escape(str(v).title())),
+            'recommendation': ('Fix', lambda v: html.escape(str(v)[:80])),
+            'determinant_value': ('Determinant', lambda v: html.escape(str(v))),
+            'dependent_values': ('Dependent Values', lambda v: html.escape(str(v)[:50])),
+            # Other common fields
+            'row_indices': ('Rows', lambda v: html.escape(str(v[:5])) if v else None),
+            'affected_columns': ('Columns', lambda v: html.escape(', '.join(v)) if v and isinstance(v, list) else None),
+            'current_label': ('Current', lambda v: html.escape(str(v))),
+            'suggested_label': ('Suggested', lambda v: html.escape(str(v))),
         }
 
+        # Skip fields that shouldn't be displayed directly
+        skip_fields = {'example_violations', 'llm_explanation', 'row_indices'}
+
         for field, (label, formatter) in field_labels.items():
+            if field in skip_fields:
+                continue
             if field in example and example[field] is not None:
                 try:
                     formatted_val = formatter(example[field])
-                    metrics.append(f'<div class="example-metric"><span class="metric-label">{label}:</span> <span class="metric-value">{formatted_val}</span></div>')
+                    if formatted_val is not None:
+                        metrics.append(f'<div class="example-metric"><span class="metric-label">{label}:</span> <span class="metric-value">{formatted_val}</span></div>')
                 except:
                     pass
 
@@ -1019,6 +1047,73 @@ class HTMLReportGenerator:
             .download-btn {
                 display: none;
             }
+        }
+
+        /* Label noise cards */
+        .ln-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        .ln-card {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-left: 4px solid #ef4444;
+            border-radius: 10px;
+            padding: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+
+        .ln-title {
+            font-weight: 700;
+            color: #b91c1c;
+            margin-bottom: 0.4rem;
+            font-size: 0.95rem;
+        }
+
+        .ln-meta {
+            font-size: 0.85rem;
+            color: #64748b;
+            margin-bottom: 0.6rem;
+            padding-bottom: 0.4rem;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .ln-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 0.6rem;
+            font-size: 0.85rem;
+        }
+
+        .ln-table td {
+            padding: 0.3rem 0.4rem;
+            border-bottom: 1px solid #f1f5f9;
+            text-align: left;
+        }
+
+        .ln-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .ln-key {
+            color: #64748b;
+            font-weight: 600;
+            width: 40%;
+        }
+
+        .ln-val {
+            color: #1e293b;
+        }
+
+        .ln-exp {
+            font-size: 0.85rem;
+            color: #334155;
+            line-height: 1.5;
+            padding-top: 0.4rem;
+            border-top: 1px solid #f1f5f9;
         }
         """
 
