@@ -14,6 +14,7 @@ from tkinter import ttk, filedialog, messagebox
 from core.html_report_generator import HTMLReportGenerator
 from core.report import Report
 from preprocessing.dataset import Dataset
+from utils.consts import POLARS_SIZE_THRESHOLD_MB
 from report_components.base_component import AnalysisContext
 from report_components.simple_components.missing_values import MissingValuesReport
 from report_components.simple_components.dataset_overview import DatasetOverviewComponent
@@ -167,6 +168,8 @@ class AEDAApp:
         self.status_text = tk.StringVar(value="Ready")
         self.current_component = tk.StringVar(value="")
         self.spinner_text = tk.StringVar(value="")
+        self.engine_var = tk.StringVar(value="pandas")
+        self.use_recommended_engine = tk.BooleanVar(value=True)
 
         # State
         self.dataset: Optional[Dataset] = None
@@ -175,6 +178,7 @@ class AEDAApp:
         self.cancel_requested = False
         self.spinner_index = 0
         self.spinner_job = None
+        self.recommended_engine = "pandas"
 
         # Build UI
         self._build_ui()
@@ -226,6 +230,9 @@ class AEDAApp:
 
         # File Selection Card
         self._build_file_card(main_frame)
+
+        # Engine Selection Card
+        self._build_engine_card(main_frame)
 
         # ML/DL Options Card
         self._build_ml_card(main_frame)
@@ -303,6 +310,143 @@ class AEDAApp:
                                          text="Supported formats: CSV, Parquet",
                                          style="Card.TLabel")
         self.file_info_label.pack(anchor=tk.W, pady=(10, 0))
+
+    def _build_engine_card(self, parent):
+        card = self._create_card(parent, "⚙️ Processing Engine")
+
+        self.engine_info_frame = ttk.Frame(card, style="Card.TFrame")
+        self.engine_info_frame.pack(fill=tk.X, pady=(10, 0))
+
+        self.engine_status_label = ttk.Label(
+            self.engine_info_frame,
+            text="Select a dataset to see engine recommendation",
+            style="Card.TLabel"
+        )
+        self.engine_status_label.pack(anchor=tk.W)
+
+        self.engine_details_label = ttk.Label(
+            self.engine_info_frame,
+            text="",
+            style="Card.TLabel"
+        )
+        self.engine_details_label.configure(foreground=ModernStyle.TEXT_SECONDARY)
+        self.engine_details_label.pack(anchor=tk.W, pady=(5, 0))
+
+        engine_select_frame = ttk.Frame(card, style="Card.TFrame")
+        engine_select_frame.pack(fill=tk.X, pady=(10, 0))
+
+        self.auto_engine_check = ttk.Checkbutton(
+            engine_select_frame,
+            text="Use recommended engine automatically",
+            variable=self.use_recommended_engine,
+            command=self._toggle_engine_selection,
+            style="Card.TCheckbutton"
+        )
+        self.auto_engine_check.pack(anchor=tk.W)
+
+        self.manual_engine_frame = ttk.Frame(card, style="Card.TFrame")
+
+        engine_label = ttk.Label(
+            self.manual_engine_frame,
+            text="Select Engine:",
+            style="Card.TLabel"
+        )
+        engine_label.pack(anchor=tk.W, pady=(10, 5))
+
+        engine_buttons_frame = ttk.Frame(self.manual_engine_frame, style="Card.TFrame")
+        engine_buttons_frame.pack(fill=tk.X)
+
+        self.pandas_radio = tk.Radiobutton(
+            engine_buttons_frame,
+            text="🐼 Pandas (standard)",
+            variable=self.engine_var,
+            value="pandas",
+            command=self._on_engine_changed,
+            bg=ModernStyle.BG_SECONDARY,
+            fg=ModernStyle.TEXT_PRIMARY,
+            selectcolor=ModernStyle.BG_TERTIARY,
+            activebackground=ModernStyle.BG_SECONDARY,
+            activeforeground=ModernStyle.TEXT_PRIMARY,
+            font=(ModernStyle.FONT_FAMILY, ModernStyle.FONT_SIZE_MEDIUM)
+        )
+        self.pandas_radio.pack(side=tk.LEFT, padx=(0, 20))
+
+        polars_state = tk.NORMAL
+        polars_text = "🐻‍❄️ Polars (fast)"
+
+        self.polars_radio = tk.Radiobutton(
+            engine_buttons_frame,
+            text=polars_text,
+            variable=self.engine_var,
+            value="polars",
+            command=self._on_engine_changed,
+            state=polars_state,
+            bg=ModernStyle.BG_SECONDARY,
+            fg=ModernStyle.TEXT_PRIMARY,
+            selectcolor=ModernStyle.BG_TERTIARY,
+            activebackground=ModernStyle.BG_SECONDARY,
+            activeforeground=ModernStyle.TEXT_PRIMARY,
+            font=(ModernStyle.FONT_FAMILY, ModernStyle.FONT_SIZE_MEDIUM)
+        )
+        self.polars_radio.pack(side=tk.LEFT)
+
+
+    def _toggle_engine_selection(self):
+        if self.use_recommended_engine.get():
+            self.manual_engine_frame.pack_forget()
+            if self.dataset:
+                self.engine_var.set(self.recommended_engine)
+                self._reload_dataset_with_engine()
+        else:
+            self.manual_engine_frame.pack(fill=tk.X, pady=(10, 0))
+
+    def _on_engine_changed(self):
+        if self.dataset and not self.use_recommended_engine.get():
+            self._reload_dataset_with_engine()
+
+    def _reload_dataset_with_engine(self):
+        if not self.dataset:
+            return
+
+        try:
+            new_engine = self.engine_var.get()
+            if new_engine == self.dataset.engine:
+                return
+
+            self.dataset = self.dataset.switch_engine(new_engine)
+            self._update_engine_display()
+            self._add_log(f"Switched to {new_engine} engine")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to switch engine:\n{str(e)}")
+            self.engine_var.set(self.dataset.engine)
+
+    def _update_engine_display(self):
+        if not self.dataset:
+            self.engine_status_label.config(text="Select a dataset to see engine recommendation")
+            self.engine_details_label.config(text="")
+            return
+
+        info = self.dataset.get_info()
+        size_mb = info["file_size_mb"]
+        current_engine = info["engine"]
+        recommended = info["recommended_engine"]
+        self.recommended_engine = recommended
+
+        if recommended == "polars":
+            status_text = f"📊 Large dataset ({size_mb:.1f} MB) - Polars recommended"
+            status_color = ModernStyle.WARNING
+        else:
+            status_text = f"📊 Dataset size: {size_mb:.1f} MB - Pandas is suitable"
+            status_color = ModernStyle.SUCCESS
+
+        self.engine_status_label.config(text=status_text, foreground=status_color)
+
+        details = f"Current engine: {current_engine.upper()} | Threshold: {POLARS_SIZE_THRESHOLD_MB} MB"
+        self.engine_details_label.config(text=details)
+
+        if self.use_recommended_engine.get():
+            self.engine_var.set(recommended)
 
     def _build_ml_card(self, parent):
         """Build the ML/DL options card."""
@@ -386,7 +530,6 @@ class AEDAApp:
                              style="Subtitle.TLabel")
         log_label.pack(anchor=tk.W, pady=(0, 5))
 
-        # Log text widget with scrollbar
         log_container = ttk.Frame(log_frame, style="Card.TFrame")
         log_container.pack(fill=tk.X)
 
@@ -487,27 +630,28 @@ class AEDAApp:
             self._load_dataset_preview(filepath)
 
     def _load_dataset_preview(self, filepath: str):
-        """Load dataset and update UI with preview info."""
         try:
             ext = Path(filepath).suffix.lower()
 
-            if ext == ".csv":
-                self.dataset = Dataset.from_csv(filepath)
-            elif ext == ".parquet":
-                self.dataset = Dataset.from_parquet(filepath)
-            else:
+            if ext not in [".csv", ".parquet"]:
                 raise ValueError(f"Unsupported file format: {ext}")
 
-            # Get columns for target selection
+            engine = None if self.use_recommended_engine.get() else self.engine_var.get()
+            self.dataset = Dataset(filepath, engine=engine)
+
             self.columns = list(self.dataset.df.columns)
             self.target_combo['values'] = self.columns
 
-            # Update file info
             rows, cols = self.dataset.df.shape
             self.file_info_label.config(
                 text=f"✓ Loaded: {rows:,} rows × {cols} columns",
                 foreground=ModernStyle.SUCCESS
             )
+
+            self._update_engine_display()
+
+            if self.use_recommended_engine.get():
+                self.engine_var.set(self.dataset.engine)
 
         except Exception as e:
             self.dataset = None
@@ -598,9 +742,9 @@ class AEDAApp:
         self.root.after(0, lambda: self.run_btn.config(state=tk.DISABLED))
 
     def _analysis_thread(self):
-        """Analysis thread worker."""
         try:
             self._add_log(f"Loading dataset: {Path(self.file_path.get()).name}")
+            self._add_log(f"Engine: {self.dataset.engine.upper()} | Size: {self.dataset.file_size_mb:.1f} MB")
             context = AnalysisContext(self.dataset)
             report = Report()
 
