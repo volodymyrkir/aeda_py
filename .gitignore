@@ -4,3 +4,5 @@
 *.csv
 *.parquet
 *.html
+build/
+dist/

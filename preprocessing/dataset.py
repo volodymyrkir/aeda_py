@@ -74,6 +74,10 @@ class Dataset:
             self._df_pandas = pd.read_csv(self.path)
         elif ext == ".parquet":
             self._df_pandas = pd.read_parquet(self.path)
+        elif ext == ".json":
+            self._df_pandas = pd.read_json(self.path)
+        elif ext == ".orc":
+            self._df_pandas = pd.read_orc(self.path)
         else:
             raise ValueError(f"Unsupported file format: {ext}")
 
@@ -84,6 +88,12 @@ class Dataset:
             self._df_polars = pl.read_csv(self.path)
         elif ext == ".parquet":
             self._df_polars = pl.read_parquet(self.path)
+        elif ext == ".json":
+            self._df_polars = pl.read_json(self.path)
+        elif ext == ".orc":
+            self._df_pandas = pd.read_orc(self.path)
+            self._df_polars = pl.from_pandas(self._df_pandas)
+            return
         else:
             raise ValueError(f"Unsupported file format: {ext}")
 
@@ -132,3 +142,12 @@ class Dataset:
     @classmethod
     def from_parquet(cls, path: str, engine: Optional[Engine] = None) -> "Dataset":
         return cls(path, engine=engine)
+
+    @classmethod
+    def from_json(cls, path: str, engine: Optional[Engine] = None) -> "Dataset":
+        return cls(path, engine=engine)
+
+    @classmethod
+    def from_orc(cls, path: str, engine: Optional[Engine] = None) -> "Dataset":
+        return cls(path, engine=engine)
+

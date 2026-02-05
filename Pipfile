@@ -12,6 +12,7 @@ shap = "*"
 torch = "*"
 transformers = "*"
 polars = "*"
+pyinstaller = "*"
 
 [dev-packages]
 

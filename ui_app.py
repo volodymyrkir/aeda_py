@@ -305,9 +305,8 @@ class AEDAApp:
                               pady=5)
         browse_btn.pack(side=tk.RIGHT)
 
-        # File info label
         self.file_info_label = ttk.Label(card,
-                                         text="Supported formats: CSV, Parquet",
+                                         text="Supported formats: CSV, Parquet, JSON, ORC",
                                          style="Card.TLabel")
         self.file_info_label.pack(anchor=tk.W, pady=(10, 0))
 
@@ -613,9 +612,11 @@ class AEDAApp:
     def _browse_file(self):
         """Open file browser dialog."""
         file_types = [
-            ("Data files", "*.csv *.parquet"),
+            ("Data files", "*.csv *.parquet *.json *.orc"),
             ("CSV files", "*.csv"),
             ("Parquet files", "*.parquet"),
+            ("JSON files", "*.json"),
+            ("ORC files", "*.orc"),
             ("All files", "*.*")
         ]
 
@@ -633,7 +634,7 @@ class AEDAApp:
         try:
             ext = Path(filepath).suffix.lower()
 
-            if ext not in [".csv", ".parquet"]:
+            if ext not in [".csv", ".parquet", ".json", ".orc"]:
                 raise ValueError(f"Unsupported file format: {ext}")
 
             engine = None if self.use_recommended_engine.get() else self.engine_var.get()

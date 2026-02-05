@@ -1,0 +1,10 @@
+pandas
+pyarrow
+pandas-stubs
+scikit-learn
+shap
+torch
+transformers
+accelerate
+polars
+pyinstaller
