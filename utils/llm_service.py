@@ -5,6 +5,8 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
 
+from utils.consts import DEFAULT_LLM_MODEL, DEFAULT_LLM_MAX_TOKENS, DEFAULT_LLM_TEMPERATURE, DEFAULT_LLM_TIMEOUT
+
 logger = logging.getLogger(__name__)
 
 _llm_service_instance: Optional["LLMService"] = None
@@ -19,9 +21,9 @@ class LLMProvider(Enum):
 class LLMConfig:
     provider: LLMProvider
     model_name: Optional[str] = None
-    max_tokens: int = 256
-    temperature: float = 0.3
-    timeout: int = 30
+    max_tokens: int = DEFAULT_LLM_MAX_TOKENS
+    temperature: float = DEFAULT_LLM_TEMPERATURE
+    timeout: int = DEFAULT_LLM_TIMEOUT
 
 
 class BaseLLMProvider(ABC):
@@ -71,7 +73,7 @@ class LocalHuggingFaceProvider(BaseLLMProvider):
                 "transformers and torch not installed. Run: pip install transformers torch accelerate"
             )
 
-        model_name = self.config.model_name or "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+        model_name = self.config.model_name or DEFAULT_LLM_MODEL
 
         if torch.cuda.is_available():
             device = "cuda"
@@ -98,7 +100,6 @@ class LocalHuggingFaceProvider(BaseLLMProvider):
         try:
             import torch
             from transformers import pipeline
-
             return True
         except ImportError:
             return False
@@ -121,7 +122,7 @@ class LocalHuggingFaceProvider(BaseLLMProvider):
         )
 
         generated = outputs[0]["generated_text"]
-        response = generated[len(formatted) :].strip()
+        response = generated[len(formatted):].strip()
         return response
 
 
@@ -215,7 +216,6 @@ class LLMService:
         prompt = f"{similarity_score:.0%} similar records. Differences: {diff_str}. Why duplicates? 2 sentences, max 25 words."
         return self.generate(prompt, max_tokens=100)
 
-
     def explain_label_noise(
         self,
         row_data: Dict[str, Any],
@@ -228,28 +228,23 @@ class LLMService:
         class_noise_rate: Optional[float] = None,
         confused_with: Optional[List[str]] = None,
     ) -> str:
-        # Build factual context from actual model predictions
         facts = []
 
-        # Fact 1: Model's prediction vs current label with actual probabilities
         if model_prediction is not None and str(model_prediction) != str(current_label):
             if model_confidence is not None and current_label_prob is not None:
                 facts.append(f"Model assigns {model_confidence:.0%} probability to class {model_prediction}, but only {current_label_prob:.0%} to current label {current_label}")
             else:
                 facts.append(f"Model predicts class {model_prediction}, not {current_label}")
 
-        # Fact 2: Class-level noise rate
         if class_noise_rate is not None and class_noise_rate > 0.1:
             facts.append(f"Class {current_label} has {class_noise_rate:.0%} overall noise rate in dataset")
 
-        # Fact 3: Common confusions from transition matrix
         if confused_with and len(confused_with) > 0:
             facts.append(f"Class {current_label} is frequently mislabeled as {confused_with[0]}")
 
         if not facts:
             return f"Label {current_label} flagged as potentially noisy based on ensemble classifier disagreement."
 
-        # Return factual summary without asking LLM to hallucinate
         return " ".join(facts)
 
     def explain_distribution_anomaly(
@@ -308,10 +303,10 @@ class LLMService:
         prompt = f"""Component: {component_name}
 Metrics: {json.dumps(metrics, default=str)}
 Findings: {findings}
-In 2-3 sentences: What does this analysis reveal about data quality? Any concerns or recommendations?
+In 2-3 sentences: Summarize ONLY what this component found. Do NOT make claims about ML readiness based on dataset size alone. Focus on describing the actual findings.
 """
 
         return self.generate(
             prompt,
-            system_prompt="You are a data quality analyst. Be brief and actionable.",
+            system_prompt="You are a data quality analyst. Describe only what the metrics show. Do not speculate about ML suitability based on row/column counts.",
         )

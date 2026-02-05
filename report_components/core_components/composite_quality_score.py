@@ -1,23 +1,3 @@
-"""
-Composite Data Quality Score via Meta-Learning
-
-This module implements a comprehensive data quality assessment framework
-that transforms low-level dataset statistics into interpretable quality
-dimensions. The approach is grounded in:
-
-- Data Quality dimensions from Wang & Strong (1996) and ISO 25012
-- Meta-learning feature extraction (Vanschoren, 2018)
-- Information-theoretic measures for redundancy detection
-- Bootstrap methods for uncertainty quantification
-
-References:
-    - Wang, R. Y., & Strong, D. M. (1996). Beyond accuracy: What data quality
-      means to data consumers. JMIS, 12(4), 5-33.
-    - Vanschoren, J. (2018). Meta-learning: A survey. arXiv:1810.03548.
-    - ISO/IEC 25012:2008 - Data quality model.
-    - Efron, B., & Tibshirani, R. J. (1994). An introduction to the bootstrap.
-"""
-
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
@@ -27,72 +7,58 @@ from scipy.stats import entropy, spearmanr
 from scipy.spatial.distance import pdist, squareform
 
 from report_components.base_component import ReportComponent
+from utils.consts import (
+    COMPOSITE_N_BOOTSTRAP, COMPOSITE_MISSING_RATIO_THRESHOLD,
+    COMPOSITE_OUTLIER_RATIO_THRESHOLD, COMPOSITE_DUPLICATE_RATIO_THRESHOLD,
+    COMPOSITE_CORRELATION_THRESHOLD, COMPOSITE_IMBALANCE_THRESHOLD,
+    COMPOSITE_BOOTSTRAP_SAMPLE_SIZE, COMPOSITE_MIN_ROWS
+)
 
 
 class QualityDimension(Enum):
-    """
-    Data quality dimensions based on ISO 25012 and Wang & Strong (1996).
-    """
-    COMPLETENESS = "completeness"  # Absence of missing values
-    CONSISTENCY = "consistency"    # Internal coherence, no contradictions
-    ACCURACY = "accuracy"          # Correctness of values (label purity)
-    UNIQUENESS = "uniqueness"      # Absence of duplicates
-    VALIDITY = "validity"          # Conformance to constraints
-    TIMELINESS = "timeliness"      # Recency (if temporal data)
+    COMPLETENESS = "completeness"
+    CONSISTENCY = "consistency"
+    ACCURACY = "accuracy"
+    UNIQUENESS = "uniqueness"
+    VALIDITY = "validity"
+    TIMELINESS = "timeliness"
 
 
 @dataclass
 class MetaFeatures:
-    """
-    Comprehensive meta-features extracted from the dataset.
-
-    Categories follow the taxonomy from Vanschoren (2018):
-    - Simple: Basic statistics
-    - Statistical: Distributional properties
-    - Information-theoretic: Entropy-based measures
-    - Model-based: Properties derived from simple models
-    """
-    # Simple meta-features
     n_samples: int
     n_features: int
     n_classes: Optional[int]
-    dimensionality: float  # n_features / n_samples
+    dimensionality: float
 
-    # Completeness features
     missing_ratio: float
-    missing_features_ratio: float  # Fraction of features with any missing
-    complete_cases_ratio: float    # Fraction of rows with no missing
+    missing_features_ratio: float
+    complete_cases_ratio: float
 
-    # Statistical features
     mean_skewness: float
     mean_kurtosis: float
     outlier_ratio: float
-    feature_variance_cv: float  # Coefficient of variation of feature variances
+    feature_variance_cv: float
 
-    # Information-theoretic features
     mean_feature_entropy: float
     mean_mutual_information: float
-    redundancy_ratio: float  # Based on correlation clustering
+    redundancy_ratio: float
 
-    # Consistency features
     duplicate_ratio: float
     near_duplicate_ratio: float
     correlation_mean: float
     correlation_std: float
 
-    # Class-related features (if applicable)
     class_imbalance_ratio: Optional[float]
     label_noise_ratio: Optional[float]
     class_entropy: Optional[float]
 
-    # Complexity features
-    intrinsic_dimensionality: float  # PCA-based
+    intrinsic_dimensionality: float
     feature_noise_ratio: float
 
 
 @dataclass
 class QualityScoreResult:
-    """Structured container for quality assessment results."""
     composite_score: float
     confidence_interval: Tuple[float, float]
     dimension_scores: Dict[str, float]
@@ -104,38 +70,10 @@ class QualityScoreResult:
 
 
 class CompositeQualityScoreComponent(ReportComponent):
-    """
-    Meta-Learning Based Composite Data Quality Assessment.
-
-    This component provides a comprehensive, theoretically-grounded assessment
-    of dataset quality for machine learning. It differs from simple statistics
-    by:
-
-    1. **Multi-dimensional Assessment**: Quality is decomposed into ISO 25012
-       dimensions (completeness, consistency, accuracy, uniqueness, validity).
-
-    2. **Meta-feature Extraction**: Following meta-learning literature, we
-       extract statistical, information-theoretic, and model-based features.
-
-    3. **Adaptive Weighting**: Dimension weights can be learned from a corpus
-       of datasets or set based on domain expertise.
-
-    4. **Uncertainty Quantification**: Bootstrap resampling provides confidence
-       intervals for the composite score.
-
-    5. **Actionable Insights**: The component identifies specific quality issues
-       and generates prioritized recommendations.
-
-    Attributes:
-        n_bootstrap: Number of bootstrap samples for confidence intervals
-        custom_weights: Optional custom weights for quality dimensions
-        target_column: Optional target column for supervised metrics
-    """
-
     def __init__(
         self,
         context,
-        n_bootstrap: int = 30,
+        n_bootstrap: int = COMPOSITE_N_BOOTSTRAP,
         custom_weights: Optional[Dict[str, float]] = None,
         target_column: Optional[str] = None,
         severity_thresholds: Optional[Dict[str, float]] = None,
@@ -146,11 +84,11 @@ class CompositeQualityScoreComponent(ReportComponent):
         self.custom_weights = custom_weights
         self.target_column = target_column
         self.severity_thresholds = severity_thresholds or {
-            "missing_ratio": 0.05,
-            "outlier_ratio": 0.1,
-            "duplicate_ratio": 0.01,
-            "correlation_threshold": 0.95,
-            "imbalance_threshold": 10.0
+            "missing_ratio": COMPOSITE_MISSING_RATIO_THRESHOLD,
+            "outlier_ratio": COMPOSITE_OUTLIER_RATIO_THRESHOLD,
+            "duplicate_ratio": COMPOSITE_DUPLICATE_RATIO_THRESHOLD,
+            "correlation_threshold": COMPOSITE_CORRELATION_THRESHOLD,
+            "imbalance_threshold": COMPOSITE_IMBALANCE_THRESHOLD
         }
         self._result: Optional[QualityScoreResult] = None
 

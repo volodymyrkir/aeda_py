@@ -18,9 +18,9 @@ from report_components.core_components.relational_consistency import RelationalC
 from report_components.core_components.near_duplicate_detection import NearDuplicateDetectionComponent
 from report_components.core_components.llm_dataset_summary import LLMDatasetSummaryComponent
 
+
 def main():
     dataset = Dataset.from_parquet("titanic.parquet")
-    #dataset = Dataset.from_csv("sample_dataset.csv")
     context = AnalysisContext(dataset)
 
     report = Report()
@@ -44,6 +44,7 @@ def main():
     webbrowser.open('file://' + os.path.realpath(report_path))
 
     print(f'\n✅ Report generated: {report_path} - {datetime.datetime.now().strftime("H%M")}')
+
 
 if __name__ == "__main__":
     main()

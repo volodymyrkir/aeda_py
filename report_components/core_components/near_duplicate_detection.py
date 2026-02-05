@@ -1,25 +1,3 @@
-"""
-Near-Duplicate Detection using MinHash LSH and Embeddings
-
-This module implements a hybrid near-duplicate detection framework that combines:
-- MinHash Locality Sensitive Hashing for efficient text-based similarity
-- Dense embeddings for semantic similarity detection
-- Configurable similarity thresholds and column weighting
-
-Near-duplicates are records that are highly similar but not identical, often
-arising from:
-- Data entry variations (typos, formatting differences)
-- Record linkage issues across data sources
-- Temporal versions of the same entity
-- Aggregation artifacts from ETL pipelines
-
-References:
-    - Broder, A. Z. (1997). On the resemblance and containment of documents.
-      Compression and Complexity of Sequences.
-    - Leskovec, J., Rajaraman, A., & Ullman, J. D. (2014). Mining of Massive
-      Datasets. Cambridge University Press. (Ch. 3: Finding Similar Items)
-"""
-
 import hashlib
 from typing import Dict, List, Tuple, Optional, Any, Set
 from dataclasses import dataclass, field
@@ -30,11 +8,11 @@ import pandas as pd
 from collections import defaultdict
 
 from report_components.base_component import ReportComponent, AnalysisContext
-from utils.consts import NUM_EXAMPLES_LLM
-
-# Risk thresholds for near-duplicate detection
-LOW_NEAR_DUPLICATE_RATIO = 0.005
-MEDIUM_NEAR_DUPLICATE_RATIO = 0.02
+from utils.consts import (
+    NUM_EXAMPLES_LLM, LOW_NEAR_DUPLICATE_RATIO, MEDIUM_NEAR_DUPLICATE_RATIO,
+    NEAR_DUPLICATE_SIMILARITY_THRESHOLD, NEAR_DUPLICATE_NUM_PERM,
+    NEAR_DUPLICATE_NUM_BANDS, NEAR_DUPLICATE_NGRAM_SIZE, NEAR_DUPLICATE_MAX_PAIRS
+)
 
 
 @dataclass
@@ -70,58 +48,29 @@ class NearDuplicateResult:
 
 
 class MinHasher:
-    """
-    MinHash implementation for efficient Jaccard similarity estimation.
-
-    MinHash approximates Jaccard similarity J(A,B) = |A∩B| / |A∪B| by computing
-    the probability that min(h(A)) = min(h(B)) for random hash functions h.
-    """
-
-    def __init__(self, num_perm: int = 128, seed: int = 42):
-        """
-        Initialize MinHasher with specified number of permutations.
-
-        Args:
-            num_perm: Number of hash functions (higher = more accurate, slower)
-            seed: Random seed for reproducibility
-        """
+    def __init__(self, num_perm: int = NEAR_DUPLICATE_NUM_PERM, seed: int = 42):
         self.num_perm = num_perm
         self.seed = seed
 
-        # Generate random hash function parameters using Mersenne prime
         np.random.seed(seed)
         self._mersenne_prime = (1 << 61) - 1
         self._max_hash = (1 << 32) - 1
 
-        # Parameters for hash functions: h(x) = (a * x + b) mod p
         self._a = np.random.randint(1, self._mersenne_prime, size=num_perm, dtype=np.uint64)
         self._b = np.random.randint(0, self._mersenne_prime, size=num_perm, dtype=np.uint64)
 
     def _hash_token(self, token: str) -> int:
-        """Hash a token to a 32-bit integer."""
         return int(hashlib.md5(token.encode('utf-8')).hexdigest()[:8], 16)
 
     def compute_signature(self, tokens: Set[str]) -> np.ndarray:
-        """
-        Compute MinHash signature for a set of tokens.
-
-        Args:
-            tokens: Set of string tokens (e.g., n-grams, words)
-
-        Returns:
-            MinHash signature as numpy array of shape (num_perm,)
-        """
         if not tokens:
             return np.full(self.num_perm, self._max_hash, dtype=np.uint64)
 
-        # Hash all tokens
         token_hashes = np.array([self._hash_token(t) for t in tokens], dtype=np.uint64)
 
-        # Compute min hash for each permutation
         signature = np.full(self.num_perm, self._max_hash, dtype=np.uint64)
 
         for token_hash in token_hashes:
-            # Compute all permuted hashes at once
             permuted = (self._a * token_hash + self._b) % self._mersenne_prime
             permuted = permuted & self._max_hash
             signature = np.minimum(signature, permuted)
@@ -130,36 +79,11 @@ class MinHasher:
 
     @staticmethod
     def estimate_similarity(sig_a: np.ndarray, sig_b: np.ndarray) -> float:
-        """
-        Estimate Jaccard similarity from two MinHash signatures.
-
-        Args:
-            sig_a: MinHash signature of first set
-            sig_b: MinHash signature of second set
-
-        Returns:
-            Estimated Jaccard similarity in [0, 1]
-        """
         return float(np.mean(sig_a == sig_b))
 
 
 class LSHIndex:
-    """
-    Locality Sensitive Hashing index for efficient nearest neighbor search.
-
-    Uses banding technique: divides signature into bands of rows. Two items
-    are candidates if they match in at least one band, which amplifies the
-    probability of finding similar items while reducing false positives.
-    """
-
-    def __init__(self, num_perm: int = 128, num_bands: int = 32):
-        """
-        Initialize LSH index.
-
-        Args:
-            num_perm: Number of permutations in MinHash signatures
-            num_bands: Number of bands for LSH (higher = more candidates, lower threshold)
-        """
+    def __init__(self, num_perm: int = NEAR_DUPLICATE_NUM_PERM, num_bands: int = NEAR_DUPLICATE_NUM_BANDS):
         if num_perm % num_bands != 0:
             raise ValueError(f"num_perm ({num_perm}) must be divisible by num_bands ({num_bands})")
 
@@ -167,14 +91,12 @@ class LSHIndex:
         self.num_bands = num_bands
         self.rows_per_band = num_perm // num_bands
 
-        # Hash tables for each band
         self._buckets: List[Dict[int, List[int]]] = [
             defaultdict(list) for _ in range(num_bands)
         ]
         self._signatures: Dict[int, np.ndarray] = {}
 
     def insert(self, idx: int, signature: np.ndarray):
-        """Insert a signature into the index."""
         self._signatures[idx] = signature
 
         for band_idx in range(self.num_bands):
@@ -185,11 +107,6 @@ class LSHIndex:
             self._buckets[band_idx][bucket_key].append(idx)
 
     def query_candidates(self, idx: int) -> Set[int]:
-        """
-        Find candidate near-duplicates for a given index.
-
-        Returns indices that share at least one band bucket with the query.
-        """
         signature = self._signatures.get(idx)
         if signature is None:
             return set()
@@ -202,53 +119,26 @@ class LSHIndex:
             bucket_key = hash(band.tobytes())
             candidates.update(self._buckets[band_idx][bucket_key])
 
-        # Remove self
         candidates.discard(idx)
         return candidates
 
 
 class NearDuplicateDetectionComponent(ReportComponent):
-    """
-    Near-Duplicate Detection using MinHash LSH and optional dense embeddings.
-
-    This component identifies records that are highly similar but not identical,
-    which is critical for:
-    - Detecting data quality issues from record linkage or ETL processes
-    - Identifying potential data leakage in train/test splits
-    - Discovering redundant information that may bias models
-    - Cleaning datasets for deduplication pipelines
-
-    The detection uses a two-stage approach:
-    1. **Candidate Generation**: MinHash LSH efficiently finds candidate pairs
-       with sub-quadratic complexity O(n * k) where k << n
-    2. **Verification**: Detailed similarity computation confirms near-duplicates
-       using configurable column weights and similarity metrics
-
-    Attributes:
-        similarity_threshold: Minimum similarity to consider as near-duplicate
-        num_perm: Number of MinHash permutations
-        num_bands: Number of LSH bands
-        use_embeddings: Whether to use dense embeddings for text columns
-        text_columns: Specific columns to treat as text for embedding
-        exclude_columns: Columns to exclude from similarity computation
-        column_weights: Custom weights for column importance
-    """
-
     def __init__(
         self,
         context: AnalysisContext,
-        similarity_threshold: float = 0.8,
-        num_perm: int = 128,
-        num_bands: int = 32,
+        similarity_threshold: float = NEAR_DUPLICATE_SIMILARITY_THRESHOLD,
+        num_perm: int = NEAR_DUPLICATE_NUM_PERM,
+        num_bands: int = NEAR_DUPLICATE_NUM_BANDS,
         use_embeddings: bool = False,
         text_columns: Optional[List[str]] = None,
         exclude_columns: Optional[List[str]] = None,
         column_weights: Optional[Dict[str, float]] = None,
-        ngram_size: int = 3,
-        max_pairs_to_report: int = 100,
+        ngram_size: int = NEAR_DUPLICATE_NGRAM_SIZE,
+        max_pairs_to_report: int = NEAR_DUPLICATE_MAX_PAIRS,
         cluster_similar_records: bool = True,
         random_state: int = 42,
-        use_llm_explanations: bool = True  # Enable LLM-powered explanations
+        use_llm_explanations: bool = True
     ):
         super().__init__(context, use_llm_explanations)
         self.similarity_threshold = similarity_threshold
