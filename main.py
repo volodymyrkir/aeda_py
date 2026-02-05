@@ -20,7 +20,9 @@ from report_components.core_components.llm_dataset_summary import LLMDatasetSumm
 
 
 def main():
-    dataset = Dataset.from_parquet("titanic.parquet")
+    dataset = Dataset("titanic.parquet")
+    print(f"Engine: {dataset.engine} | Size: {dataset.file_size_mb:.2f} MB | Recommended: {dataset.recommended_engine}")
+
     context = AnalysisContext(dataset)
 
     report = Report()
