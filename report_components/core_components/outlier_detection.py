@@ -8,23 +8,26 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 
 from report_components.base_component import ReportComponent, AnalysisContext
-from utils.consts import NUM_EXAMPLES_LLM
+from utils.consts import (
+    NUM_EXAMPLES_LLM, OUTLIER_N_ESTIMATORS, OUTLIER_CONTAMINATION,
+    OUTLIER_CARDINALITY_THRESHOLD, OUTLIER_MIN_UNIQUE_FOR_ID, OUTLIER_MAX_EXPLAIN_FEATURES
+)
 
 
 class OutlierDetectionComponent(ReportComponent):
     def __init__(
             self,
             context: AnalysisContext,
-            n_estimators: int = 200,
-            contamination: str = "auto",
+            n_estimators: int = OUTLIER_N_ESTIMATORS,
+            contamination: str = OUTLIER_CONTAMINATION,
             threshold_percentile: Optional[float] = None,
-            max_explain_features: int = 5,
+            max_explain_features: int = OUTLIER_MAX_EXPLAIN_FEATURES,
             impute_missing: bool = True,
             use_shap: bool = True,
             random_state: int = 42,
             skip_high_cardinality: bool = True,
-            cardinality_threshold: float = 0.85,
-            min_unique_for_id_heuristic: int = 50,
+            cardinality_threshold: float = OUTLIER_CARDINALITY_THRESHOLD,
+            min_unique_for_id_heuristic: int = OUTLIER_MIN_UNIQUE_FOR_ID,
             use_llm_explanations: bool = True
     ):
         super().__init__(context, use_llm_explanations)

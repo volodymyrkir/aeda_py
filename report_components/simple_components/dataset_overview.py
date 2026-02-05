@@ -4,13 +4,10 @@ import pandas as pd
 import numpy as np
 
 from report_components.base_component import ReportComponent, AnalysisContext
+from utils.consts import IDENTIFIER_UNIQUENESS_THRESHOLD, IDENTIFIER_MIN_UNIQUE, LOW_CARDINALITY_THRESHOLD
 
 
 class DatasetOverviewComponent(ReportComponent):
-    """
-    Provides a comprehensive structural and statistical overview of the dataset.
-    """
-
     def __init__(self, context: AnalysisContext, use_llm_explanations: bool = True):
         super().__init__(context, use_llm_explanations)
 
@@ -30,14 +27,12 @@ class DatasetOverviewComponent(ReportComponent):
 
         self.result = overview
 
-        # Share artifacts useful for downstream components
         self.context.shared_artifacts["numeric_columns"] = list(
             df.select_dtypes(include=[np.number]).columns
         )
         self.context.shared_artifacts["categorical_columns"] = list(
             df.select_dtypes(exclude=[np.number]).columns
         )
-
 
     @staticmethod
     def _analyze_shape(df: pd.DataFrame) -> Dict[str, int]:
@@ -73,8 +68,8 @@ class DatasetOverviewComponent(ReportComponent):
             cardinality[col] = {
                 "unique_values": int(unique),
                 "uniqueness_ratio": round(ratio, 5),
-                "potential_identifier": bool(ratio > 0.98 and unique > 50),
-                "low_cardinality": bool(unique < 20)
+                "potential_identifier": bool(ratio > IDENTIFIER_UNIQUENESS_THRESHOLD and unique > IDENTIFIER_MIN_UNIQUE),
+                "low_cardinality": bool(unique < LOW_CARDINALITY_THRESHOLD)
             }
 
         return cardinality
@@ -94,7 +89,6 @@ class DatasetOverviewComponent(ReportComponent):
             col: {k: float(v) for k, v in stats.items()}
             for col, stats in desc.items()
         }
-
 
     def summarize(self) -> dict:
         if self.result is None:
@@ -130,13 +124,26 @@ class DatasetOverviewComponent(ReportComponent):
             try:
                 summary_data = self.summarize()
                 identifiers = summary_data.get("potential_identifiers", [])
-                findings = f"{summary_data['dataset_shape']['rows']} rows, {summary_data['dataset_shape']['columns']} columns"
+                type_dist = summary_data.get("type_distribution", {})
+
+                findings_parts = [
+                    f"Dataset has {summary_data['dataset_shape']['rows']} rows and {summary_data['dataset_shape']['columns']} columns"
+                ]
+
+                if type_dist:
+                    type_info = ", ".join([f"{count} {dtype}" for dtype, count in type_dist.items()])
+                    findings_parts.append(f"Column types: {type_info}")
+
                 if identifiers:
-                    findings += f". Potential identifiers: {', '.join(identifiers)}"
+                    findings_parts.append(f"Potential identifier columns detected: {', '.join(identifiers)}")
+                else:
+                    findings_parts.append("No high-cardinality identifier columns detected")
+
+                findings = ". ".join(findings_parts)
 
                 component_summary = self.llm.generate_component_summary(
                     component_name="Dataset Overview",
-                    metrics=summary_data["dataset_shape"],
+                    metrics={"rows": summary_data['dataset_shape']['rows'], "columns": summary_data['dataset_shape']['columns']},
                     findings=findings
                 )
                 lines.append(f"\n{'='*80}")
@@ -148,4 +155,3 @@ class DatasetOverviewComponent(ReportComponent):
                 pass
 
         return "\n".join(lines)
-

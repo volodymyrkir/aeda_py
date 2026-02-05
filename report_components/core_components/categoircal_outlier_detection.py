@@ -5,19 +5,23 @@ import pandas as pd
 from scipy.stats import chi2_contingency
 
 from report_components.base_component import ReportComponent, AnalysisContext
-from utils.consts import NUM_EXAMPLES_LLM
+from utils.consts import (
+    NUM_EXAMPLES_LLM, CATEGORICAL_MIN_FREQUENCY_THRESHOLD, CATEGORICAL_CARDINALITY_THRESHOLD,
+    CATEGORICAL_MIN_NULL_RATIO_WARN, CATEGORICAL_MAX_EXPLANATIONS_PER_COL
+)
+
 
 class CategoricalOutlierDetectionComponent(ReportComponent):
     def __init__(
         self,
         context: AnalysisContext,
-        min_frequency_threshold: float = 0.01,
+        min_frequency_threshold: float = CATEGORICAL_MIN_FREQUENCY_THRESHOLD,
         adaptive_threshold: bool = True,
         skip_high_cardinality: bool = True,
-        cardinality_threshold: float = 0.8,
-        max_explanations_per_col: int = 5,
+        cardinality_threshold: float = CATEGORICAL_CARDINALITY_THRESHOLD,
+        max_explanations_per_col: int = CATEGORICAL_MAX_EXPLANATIONS_PER_COL,
         use_chi_square: bool = False,
-        min_null_ratio_to_warn: float = 0.5,
+        min_null_ratio_to_warn: float = CATEGORICAL_MIN_NULL_RATIO_WARN,
         use_llm_explanations: bool = True
     ):
         super().__init__(context, use_llm_explanations)

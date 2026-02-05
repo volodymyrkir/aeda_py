@@ -1,20 +1,3 @@
-"""
-Label Noise Detection via Confident Learning
-
-This module implements a robust label noise detection framework based on
-Confident Learning (Northcutt et al., 2021) with extensions for:
-- Multi-classifier ensemble probability estimation
-- Noise transition matrix estimation
-- Noise type categorization (uniform, class-conditional, instance-dependent)
-- Statistical significance testing via permutation tests
-
-References:
-    - Northcutt, C. G., Jiang, L., & Chuang, I. L. (2021). Confident Learning:
-      Estimating Uncertainty in Dataset Labels. JAIR, 70, 1373-1411.
-    - Frénay, B., & Verleysen, M. (2014). Classification in the presence of
-      label noise: a survey. IEEE TNNLS, 25(5), 845-869.
-"""
-
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
@@ -32,19 +15,20 @@ from scipy import stats
 from scipy.special import rel_entr
 
 from report_components.base_component import ReportComponent
-from utils.consts import NUM_EXAMPLES_LLM
+from utils.consts import (
+    NUM_EXAMPLES_LLM, LABEL_NOISE_CV_FOLDS, LABEL_NOISE_N_PERMUTATIONS,
+    LABEL_NOISE_CONFIDENCE_THRESHOLD, LABEL_NOISE_MIN_ROWS
+)
 
 
 class NoiseType(Enum):
-    """Categorization of label noise patterns."""
-    UNIFORM = "uniform"  # Random noise, independent of true class
-    CLASS_CONDITIONAL = "class_conditional"  # Noise depends on true class
-    INSTANCE_DEPENDENT = "instance_dependent"  # Noise depends on features
+    UNIFORM = "uniform"
+    CLASS_CONDITIONAL = "class_conditional"
+    INSTANCE_DEPENDENT = "instance_dependent"
 
 
 @dataclass
 class NoiseAnalysisResult:
-    """Structured container for noise analysis results."""
     noise_indices: List[int]
     noise_scores: np.ndarray
     noise_ratio: float
@@ -60,40 +44,13 @@ class NoiseAnalysisResult:
 
 
 class LabelNoiseDetectionComponent(ReportComponent):
-    """
-    Advanced Label Noise Detection using Confident Learning.
-
-    This component implements a comprehensive framework for detecting and
-    characterizing label noise in supervised learning datasets. It combines
-    multiple theoretical foundations:
-
-    1. **Confident Learning**: Estimates the joint distribution Q(ŷ, y*) of
-       noisy labels ŷ and latent true labels y* using out-of-fold predictions.
-
-    2. **Noise Transition Matrix**: Estimates T where T[i,j] = P(ŷ=j | y*=i),
-       characterizing how true labels flip to observed labels.
-
-    3. **Multi-Classifier Ensemble**: Uses calibrated probability estimates
-       from diverse classifiers to improve robustness.
-
-    4. **Statistical Validation**: Employs permutation testing to assess
-       whether detected noise is statistically significant.
-
-    Attributes:
-        target_column: Name of the label column
-        cv_folds: Number of cross-validation folds for out-of-fold prediction
-        n_permutations: Number of permutations for significance testing
-        confidence_threshold: Minimum confidence for noise detection
-        use_ensemble: Whether to use multi-classifier ensemble
-    """
-
     def __init__(
         self,
         context,
         target_column: str,
-        cv_folds: int = 5,
-        n_permutations: int = 20,
-        confidence_threshold: float = 0.5,
+        cv_folds: int = LABEL_NOISE_CV_FOLDS,
+        n_permutations: int = LABEL_NOISE_N_PERMUTATIONS,
+        confidence_threshold: float = LABEL_NOISE_CONFIDENCE_THRESHOLD,
         use_ensemble: bool = True,
         calibrate_probabilities: bool = True,
         use_llm_explanations: bool = True
@@ -108,14 +65,6 @@ class LabelNoiseDetectionComponent(ReportComponent):
         self._result: Optional[NoiseAnalysisResult] = None
 
     def _get_classifier_ensemble(self) -> List[Tuple[str, Any]]:
-        """
-        Returns a diverse ensemble of classifiers for robust probability estimation.
-
-        Diversity is achieved through:
-        - Different inductive biases (tree-based, linear, neural)
-        - Different regularization strategies
-        - Different decision boundaries
-        """
         classifiers = [
             ("RandomForest", RandomForestClassifier(
                 n_estimators=100, max_depth=10, min_samples_leaf=5,

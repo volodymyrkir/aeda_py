@@ -8,7 +8,10 @@ import numpy as np
 import pandas as pd
 
 from report_components.base_component import ReportComponent, AnalysisContext
-from utils.consts import NUM_EXAMPLES_LLM
+from utils.consts import (
+    NUM_EXAMPLES_LLM, RELATIONAL_FD_CONFIDENCE_THRESHOLD,
+    RELATIONAL_MAX_FD_DETERMINANT_SIZE, RELATIONAL_MAX_VIOLATIONS
+)
 
 
 class ConstraintType(Enum):
@@ -79,9 +82,9 @@ class RelationalConsistencyComponent(ReportComponent):
         value_domains: Optional[Dict[str, List[Any]]] = None,
         patterns: Optional[Dict[str, str]] = None,
         cross_column_rules: Optional[List[Dict[str, Any]]] = None,
-        fd_confidence_threshold: float = 0.95,
-        max_fd_determinant_size: int = 2,
-        max_violations_to_report: int = 50,
+        fd_confidence_threshold: float = RELATIONAL_FD_CONFIDENCE_THRESHOLD,
+        max_fd_determinant_size: int = RELATIONAL_MAX_FD_DETERMINANT_SIZE,
+        max_violations_to_report: int = RELATIONAL_MAX_VIOLATIONS,
         random_state: int = 42,
         use_llm_explanations: bool = True
     ):

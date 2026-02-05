@@ -9,19 +9,22 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from report_components.base_component import ReportComponent, AnalysisContext
-from utils.consts import NUM_EXAMPLES_LLM
+from utils.consts import (
+    NUM_EXAMPLES_LLM, DISTRIBUTION_EPOCHS, DISTRIBUTION_BATCH_SIZE, DISTRIBUTION_LEARNING_RATE,
+    DISTRIBUTION_HIDDEN_FACTORS, DISTRIBUTION_EARLY_STOP_PATIENCE, DISTRIBUTION_VALIDATION_SPLIT,
+    DISTRIBUTION_THRESHOLD_PERCENTILE, DISTRIBUTION_MIN_ROWS, OUTLIER_CARDINALITY_THRESHOLD,
+    OUTLIER_MIN_UNIQUE_FOR_ID
+)
 
 
 class Autoencoder(nn.Module):
-    """
-    Flexible autoencoder with configurable hidden layer factors.
-    """
-
-    def __init__(self, input_dim: int, hidden_factors: List[float] = [0.5, 0.25]):
+    def __init__(self, input_dim: int, hidden_factors: List[float] = None):
         super().__init__()
+        if hidden_factors is None:
+            hidden_factors = DISTRIBUTION_HIDDEN_FACTORS
         layers = [input_dim]
         for factor in hidden_factors:
-            hidden_dim = max(4, int(layers[-1] * factor))  # Min 4 to avoid zero-dim
+            hidden_dim = max(4, int(layers[-1] * factor))
             layers.append(hidden_dim)
 
         encoder_layers = []
@@ -30,9 +33,9 @@ class Autoencoder(nn.Module):
         self.encoder = nn.Sequential(*encoder_layers)
 
         decoder_layers = []
-        for i in range(len(layers) - 2, -1, -1):  # Reverse for decoder
+        for i in range(len(layers) - 2, -1, -1):
             decoder_layers.extend([nn.Linear(layers[i + 1], layers[i]), nn.ReLU()])
-        self.decoder = nn.Sequential(*decoder_layers[:-1])  # No ReLU on output
+        self.decoder = nn.Sequential(*decoder_layers[:-1])
 
     def forward(self, x):
         z = self.encoder(x)
@@ -40,35 +43,29 @@ class Autoencoder(nn.Module):
 
 
 class DistributionModelingComponent(ReportComponent):
-    """
-    Learns joint feature distributions using a configurable autoencoder and
-    detects distributional deviations via reconstruction error. Handles missing values,
-    skips high-cardinality columns, and provides local explanations with AI narratives.
-    """
-
     def __init__(
             self,
             context: AnalysisContext,
-            epochs: int = 100,
-            batch_size: int = 32,
-            learning_rate: float = 1e-3,
-            hidden_factors: List[float] = [0.5, 0.25],
-            early_stop_patience: int = 10,
-            validation_split: float = 0.2,
-            threshold_percentile: float = 95.0,
+            epochs: int = DISTRIBUTION_EPOCHS,
+            batch_size: int = DISTRIBUTION_BATCH_SIZE,
+            learning_rate: float = DISTRIBUTION_LEARNING_RATE,
+            hidden_factors: List[float] = None,
+            early_stop_patience: int = DISTRIBUTION_EARLY_STOP_PATIENCE,
+            validation_split: float = DISTRIBUTION_VALIDATION_SPLIT,
+            threshold_percentile: float = DISTRIBUTION_THRESHOLD_PERCENTILE,
             impute_missing: bool = True,
             skip_high_cardinality: bool = True,
-            cardinality_threshold: float = 0.85,
-            min_unique_for_id_heuristic: int = 50,
+            cardinality_threshold: float = OUTLIER_CARDINALITY_THRESHOLD,
+            min_unique_for_id_heuristic: int = OUTLIER_MIN_UNIQUE_FOR_ID,
             max_explain_rows: int = 5,
             max_explain_features: int = 5,
-            use_llm_explanations: bool = True  # Enable LLM-powered explanations
+            use_llm_explanations: bool = True
     ):
         super().__init__(context, use_llm_explanations)
         self.epochs = epochs
         self.batch_size = batch_size
         self.learning_rate = learning_rate
-        self.hidden_factors = hidden_factors
+        self.hidden_factors = hidden_factors if hidden_factors is not None else DISTRIBUTION_HIDDEN_FACTORS
         self.early_stop_patience = early_stop_patience
         self.validation_split = validation_split
         self.threshold_percentile = threshold_percentile

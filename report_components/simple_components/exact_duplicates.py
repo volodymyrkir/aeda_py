@@ -4,15 +4,10 @@ from typing import Dict, Any, List
 import pandas as pd
 
 from report_components.base_component import ReportComponent, AnalysisContext
+from utils.consts import LOW_DUPLICATES_RATIO, MEDIUM_DUPLICATES_RATIO
 
-LOW_DUPLICATES_RATIO = 0.001
-MEDIUM_DUPLICATES_RATIO = 0.01
 
 class ExactDuplicateDetectionComponent(ReportComponent):
-    """
-    Detects and analyzes exact duplicate rows and evaluates their impact.
-    """
-
     def __init__(self, context: AnalysisContext, use_llm_explanations: bool = True):
         super().__init__(context, use_llm_explanations)
 
@@ -34,7 +29,6 @@ class ExactDuplicateDetectionComponent(ReportComponent):
         self.context.shared_artifacts["has_exact_duplicates"] = bool(
             self.result["summary"]["duplicate_rows"] > 0
         )
-
 
     def _compute_summary(
         self, df: pd.DataFrame, duplicate_mask: pd.Series
@@ -82,7 +76,6 @@ class ExactDuplicateDetectionComponent(ReportComponent):
                 "Bias in frequency-based or probabilistic models"
             ]
         }
-
 
     def _hash_row(self, row_values) -> str:
         joined = "|".join(map(str, row_values))
@@ -139,4 +132,3 @@ class ExactDuplicateDetectionComponent(ReportComponent):
                 pass
 
         return "\n".join(lines)
-
