@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aeda"
+name = "aeda-py"
 version = "1.0.0"
 description = "Automated Exploratory Data Analysis with LLM-powered insights"
 readme = "README.md"
@@ -45,7 +45,7 @@ dev = [
     "isort>=5.12.0",
     "mypy>=1.0.0",
 ]
-all = ["aeda[polars,dev]"]
+all = ["aeda-py[polars,dev]"]
 
 [project.urls]
 Homepage = "https://github.com/aeda/aeda"

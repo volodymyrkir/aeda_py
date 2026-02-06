@@ -1,4 +1,5 @@
 from typing import Dict, Any, List, Optional
+import html
 
 import shap
 import numpy as np
@@ -234,15 +235,45 @@ class OutlierDetectionComponent(ReportComponent):
             raise RuntimeError("analyze() must be called before get_full_summary()")
 
         lines = []
+        df = self.context.dataset.df
 
         if self.llm_explanations:
-            lines.append(f"\n{'='*80}")
+            cards_html = []
+            for expl in self.llm_explanations:
+                row_idx = expl['row_index']
+                row_data = df.iloc[row_idx].to_dict() if row_idx < len(df) else {}
+
+                outlier_entry = next((o for o in self.result["outliers"] if o["row_index"] == row_idx), {})
+                top_features = outlier_entry.get("top_contributing_features", {})
+                outlier_score = outlier_entry.get("outlier_score", 0)
+
+                feature_rows = []
+                for col, val in list(row_data.items())[:10]:
+                    col_lower = col.lower()
+                    is_id = 'id' in col_lower or 'name' in col_lower or df[col].nunique() / len(df) > 0.9
+                    if is_id:
+                        continue
+                    highlight = col in top_features
+                    style = " style='background:#fef2f2;'" if highlight else ""
+                    escaped_col = html.escape(str(col))
+                    escaped_val = html.escape(str(val)) if val is not None else "N/A"
+                    feature_rows.append(f"<tr{style}><td class='ln-key'>{escaped_col}</td><td class='ln-val'>{escaped_val}</td></tr>")
+
+                features_table = ''.join(feature_rows)
+                top_feats_str = ", ".join([f"{k}: {v:.2f}" for k, v in list(top_features.items())[:3]])
+                escaped_explanation = html.escape(str(expl['explanation']))
+
+                card = f"""<div class='ln-card'>
+                    <div class='ln-title'>Row {row_idx} · Score: {outlier_score:.4f}</div>
+                    <div class='ln-meta'>Top Features: {html.escape(top_feats_str)}</div>
+                    <table class='ln-table'>{features_table}</table>
+                    <div class='ln-exp'>{escaped_explanation}</div>
+                </div>"""
+                cards_html.append(card)
+
+            grid_html = "<div class='ln-grid'>" + ''.join(cards_html) + "</div>"
             lines.append("🤖 LLM EXAMPLE EXPLANATIONS")
-            lines.append(f"{'='*80}")
-            for i, expl in enumerate(self.llm_explanations, 1):
-                lines.append(f"\n{i}. Row {expl['row_index']}")
-                lines.append(f"   {expl['explanation']}")
-            lines.append("")
+            lines.append(grid_html)
 
         if self.llm:
             try:

@@ -2,6 +2,7 @@ import hashlib
 from typing import Dict, List, Tuple, Optional, Any, Set
 from dataclasses import dataclass, field
 import warnings
+import html
 
 import numpy as np
 import pandas as pd
@@ -689,15 +690,55 @@ class NearDuplicateDetectionComponent(ReportComponent):
             return f"⚠️ Analysis skipped: {self.result['summary']['skipped_reason']}"
 
         lines = []
+        df = self.context.dataset.df
 
-        if self.llm_explanations:
-            lines.append(f"\n{'='*80}")
+        if self.llm_explanations and self.result.get("pairs"):
+            cards_html = []
+            for expl in self.llm_explanations:
+                pair_str = expl['pair']
+                idx_a, idx_b = map(int, pair_str.split('-'))
+
+                pair_info = next((p for p in self.result["pairs"]
+                                 if p.get("index_a") == idx_a and p.get("index_b") == idx_b), {})
+                similarity = pair_info.get("similarity", 0)
+                matching = pair_info.get("matching_columns", [])
+                differing = pair_info.get("differing_columns", [])
+
+                row_a = df.iloc[idx_a].to_dict() if idx_a < len(df) else {}
+                row_b = df.iloc[idx_b].to_dict() if idx_b < len(df) else {}
+
+                def format_row(row_data, diff_cols):
+                    rows = []
+                    for col, val in list(row_data.items())[:8]:
+                        col_lower = col.lower()
+                        is_id = 'id' in col_lower or 'name' in col_lower
+                        if is_id:
+                            continue
+                        highlight = col in diff_cols
+                        style = " style='background:#fef2f2;'" if highlight else ""
+                        escaped_col = html.escape(str(col))
+                        escaped_val = html.escape(str(val)[:30]) if val is not None else "N/A"
+                        rows.append(f"<tr{style}><td class='ln-key'>{escaped_col}</td><td class='ln-val'>{escaped_val}</td></tr>")
+                    return ''.join(rows)
+
+                table_a = format_row(row_a, differing)
+                table_b = format_row(row_b, differing)
+                escaped_explanation = html.escape(str(expl['explanation']))
+
+                card = f"""<div class='ln-card' style='max-width:400px;'>
+                    <div class='ln-title'>Pair: Row {idx_a} ↔ Row {idx_b}</div>
+                    <div class='ln-meta'>Similarity: {similarity:.1%} · Matching: {len(matching)} cols · Differing: {len(differing)} cols</div>
+                    <div style='display:flex;gap:10px;'>
+                        <div style='flex:1;'><strong>Row {idx_a}</strong><table class='ln-table'>{table_a}</table></div>
+                        <div style='flex:1;'><strong>Row {idx_b}</strong><table class='ln-table'>{table_b}</table></div>
+                    </div>
+                    <div class='ln-exp'>{escaped_explanation}</div>
+                </div>"""
+                cards_html.append(card)
+
+            grid_html = "<div class='ln-grid'>" + ''.join(cards_html) + "</div>"
             lines.append("🤖 LLM EXAMPLE EXPLANATIONS")
-            lines.append(f"{'='*80}")
-            for i, expl in enumerate(self.llm_explanations, 1):
-                lines.append(f"\n{i}. Pair {expl['pair']}")
-                lines.append(f"   {expl['explanation']}")
-            lines.append("")
+            lines.append(grid_html)
 
         if self.llm:
             try:
