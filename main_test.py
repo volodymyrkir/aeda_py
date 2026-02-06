@@ -134,17 +134,33 @@ class MockOutlierDetectionComponent(MockComponent):
                 ],
                 "model_params": {"n_estimators": 200, "contamination": "auto"}
             },
-            full_summary="""
-================================================================================
-🤖 LLM EXAMPLE EXPLANATIONS
-================================================================================
-
-1. Row 7 (Score: 0.561)
-   Unusually high SibSp (4 siblings/spouses) combined with young age creates multivariate anomaly. Likely genuine rare case.
-
-2. Row 8 (Score: 0.525)
-   High Parch value with unusual survival pattern. Worth investigating but likely represents real family group.
-
+            full_summary="""🤖 LLM EXAMPLE EXPLANATIONS
+<div class='ln-grid'>
+<div class='ln-card'>
+    <div class='ln-title'>Row 7 · Score: 0.5610</div>
+    <div class='ln-meta'>Top Features: SibSp: 2.01, Age: 1.46, Parch: 0.56</div>
+    <table class='ln-table'>
+        <tr style='background:#fef2f2;'><td class='ln-key'>SibSp</td><td class='ln-val'>4</td></tr>
+        <tr style='background:#fef2f2;'><td class='ln-key'>Age</td><td class='ln-val'>9</td></tr>
+        <tr><td class='ln-key'>Pclass</td><td class='ln-val'>3</td></tr>
+        <tr><td class='ln-key'>Sex</td><td class='ln-val'>male</td></tr>
+        <tr><td class='ln-key'>Fare</td><td class='ln-val'>21.075</td></tr>
+    </table>
+    <div class='ln-exp'>Unusually high SibSp (4 siblings/spouses) combined with young age creates multivariate anomaly. Likely genuine rare case representing large family group.</div>
+</div>
+<div class='ln-card'>
+    <div class='ln-title'>Row 8 · Score: 0.5250</div>
+    <div class='ln-meta'>Top Features: Parch: 2.64, Survived: 0.91, Age: 0.41</div>
+    <table class='ln-table'>
+        <tr style='background:#fef2f2;'><td class='ln-key'>Parch</td><td class='ln-val'>5</td></tr>
+        <tr><td class='ln-key'>Age</td><td class='ln-val'>2</td></tr>
+        <tr><td class='ln-key'>Pclass</td><td class='ln-val'>3</td></tr>
+        <tr><td class='ln-key'>Sex</td><td class='ln-val'>female</td></tr>
+        <tr><td class='ln-key'>Fare</td><td class='ln-val'>31.275</td></tr>
+    </table>
+    <div class='ln-exp'>High Parch value with unusual survival pattern. Worth investigating but likely represents real family group traveling with many children.</div>
+</div>
+</div>
 ================================================================================
 📋 COMPONENT SUMMARY
 ================================================================================
@@ -279,22 +295,39 @@ class MockLabelNoiseDetectionComponent(MockComponent):
                 "(inherent label ambiguity), providing actionable insights for data cleaning."
             ),
             summary={
-                "label_column": "Survived",
                 "noise_ratio": 0.034,
-                "suspicious_records": 30,
-                "confidence_threshold": 0.8
+                "suspicious_sample_count": 30,
+                "noise_type": "class_conditional",
+                "noise_type_confidence": 0.85,
+                "ensemble_agreement": 0.92
             },
-            full_summary="""
-================================================================================
-🤖 LLM EXAMPLE EXPLANATIONS
-================================================================================
-
-1. Row 45 - Label: Survived=0
-   Female, 1st class passenger labeled as deceased. High survival probability for this profile suggests potential mislabel.
-
-2. Row 156 - Label: Survived=1
-   Male, 3rd class passenger labeled as survived. Low survival probability for this profile warrants verification.
-
+            full_summary="""🤖 LLM EXAMPLE EXPLANATIONS
+<div class='ln-grid'>
+<div class='ln-card'>
+    <div class='ln-title'>Row 45 · Label: 0</div>
+    <div class='ln-meta'>Noise Score: 0.8542</div>
+    <table class='ln-table'>
+        <tr><td class='ln-key'>Pclass</td><td class='ln-val'>1</td></tr>
+        <tr><td class='ln-key'>Sex</td><td class='ln-val'>female</td></tr>
+        <tr><td class='ln-key'>Age</td><td class='ln-val'>38</td></tr>
+        <tr><td class='ln-key'>Fare</td><td class='ln-val'>71.28</td></tr>
+        <tr><td class='ln-key'>Embarked</td><td class='ln-val'>C</td></tr>
+    </table>
+    <div class='ln-exp'>Female, 1st class passenger labeled as deceased. High survival probability for this demographic suggests potential mislabel.</div>
+</div>
+<div class='ln-card'>
+    <div class='ln-title'>Row 156 · Label: 1</div>
+    <div class='ln-meta'>Noise Score: 0.7891</div>
+    <table class='ln-table'>
+        <tr><td class='ln-key'>Pclass</td><td class='ln-val'>3</td></tr>
+        <tr><td class='ln-key'>Sex</td><td class='ln-val'>male</td></tr>
+        <tr><td class='ln-key'>Age</td><td class='ln-val'>45</td></tr>
+        <tr><td class='ln-key'>Fare</td><td class='ln-val'>7.75</td></tr>
+        <tr><td class='ln-key'>Embarked</td><td class='ln-val'>S</td></tr>
+    </table>
+    <div class='ln-exp'>Male, 3rd class passenger labeled as survived. Low survival probability for this demographic warrants verification.</div>
+</div>
+</div>
 ================================================================================
 📋 COMPONENT SUMMARY
 ================================================================================
@@ -342,23 +375,62 @@ class MockNearDuplicateDetectionComponent(MockComponent):
     def __init__(self):
         super().__init__(
             name="NearDuplicateDetectionComponent",
-            justification="Identifies records that are very similar but not exactly identical.",
+            justification="Identifies records that are very similar but not exactly identical using MinHash LSH algorithm.",
             summary={
+                "near_duplicate_ratio": 0.027,
                 "near_duplicate_pairs": 12,
-                "similarity_threshold": 0.85,
-                "affected_rows": 24
+                "affected_rows": 24,
+                "total_pairs": 12,
+                "cluster_count": 8,
+                "risk_level": "low"
             },
-            full_summary="""
-================================================================================
-🤖 LLM EXAMPLE EXPLANATIONS
-================================================================================
-
-1. Pair 123-124 (Similarity: 94%)
-   Same ticket number, similar names. Likely family members traveling together. Keep both records.
-
-2. Pair 456-457 (Similarity: 91%)
-   Same cabin and demographics. Family group booking expected for Titanic data. No action needed.
-
+            full_summary="""🤖 LLM EXAMPLE EXPLANATIONS
+<div class='ln-grid'>
+<div class='ln-card' style='max-width:400px;'>
+    <div class='ln-title'>Pair: Row 123 ↔ Row 124</div>
+    <div class='ln-meta'>Similarity: 94.0% · Matching: 8 cols · Differing: 4 cols</div>
+    <div style='display:flex;gap:10px;'>
+        <div style='flex:1;'><strong>Row 123</strong>
+            <table class='ln-table'>
+                <tr><td class='ln-key'>Pclass</td><td class='ln-val'>3</td></tr>
+                <tr><td class='ln-key'>Sex</td><td class='ln-val'>male</td></tr>
+                <tr><td class='ln-key'>Age</td><td class='ln-val'>25</td></tr>
+                <tr style='background:#fef2f2;'><td class='ln-key'>Fare</td><td class='ln-val'>7.25</td></tr>
+            </table>
+        </div>
+        <div style='flex:1;'><strong>Row 124</strong>
+            <table class='ln-table'>
+                <tr><td class='ln-key'>Pclass</td><td class='ln-val'>3</td></tr>
+                <tr><td class='ln-key'>Sex</td><td class='ln-val'>male</td></tr>
+                <tr><td class='ln-key'>Age</td><td class='ln-val'>26</td></tr>
+                <tr style='background:#fef2f2;'><td class='ln-key'>Fare</td><td class='ln-val'>7.25</td></tr>
+            </table>
+        </div>
+    </div>
+    <div class='ln-exp'>Same ticket number and similar names. Likely family members traveling together. Keep both records.</div>
+</div>
+<div class='ln-card' style='max-width:400px;'>
+    <div class='ln-title'>Pair: Row 456 ↔ Row 457</div>
+    <div class='ln-meta'>Similarity: 91.0% · Matching: 7 cols · Differing: 5 cols</div>
+    <div style='display:flex;gap:10px;'>
+        <div style='flex:1;'><strong>Row 456</strong>
+            <table class='ln-table'>
+                <tr><td class='ln-key'>Pclass</td><td class='ln-val'>1</td></tr>
+                <tr><td class='ln-key'>Sex</td><td class='ln-val'>female</td></tr>
+                <tr style='background:#fef2f2;'><td class='ln-key'>Cabin</td><td class='ln-val'>B42</td></tr>
+            </table>
+        </div>
+        <div style='flex:1;'><strong>Row 457</strong>
+            <table class='ln-table'>
+                <tr><td class='ln-key'>Pclass</td><td class='ln-val'>1</td></tr>
+                <tr><td class='ln-key'>Sex</td><td class='ln-val'>female</td></tr>
+                <tr style='background:#fef2f2;'><td class='ln-key'>Cabin</td><td class='ln-val'>B42</td></tr>
+            </table>
+        </div>
+    </div>
+    <div class='ln-exp'>Same cabin and demographics. Family group booking expected. No action needed.</div>
+</div>
+</div>
 ================================================================================
 📋 COMPONENT SUMMARY
 ================================================================================

@@ -22,16 +22,18 @@ class HTMLReportGenerator:
     def _build_html(self, components: List[ReportComponent]) -> str:
         sections_html = ""
         toc_html = ""
+        chart_data = self._extract_chart_data(components)
+
+        total_rows = self._extract_total_rows(components)
 
         for i, component in enumerate(components):
             component_name = component.__class__.__name__
             section_id = f"section-{i}"
 
-            # Build table of contents
             toc_html += f'<li><a href="#{section_id}">{self._format_name(component_name)}</a></li>\n'
+            sections_html += self._build_section(component, section_id, i + 1, total_rows)
 
-            # Build section content
-            sections_html += self._build_section(component, section_id, i + 1)
+        visualizations_html = self._build_visualizations_section(chart_data) if chart_data else ""
 
         return f"""<!DOCTYPE html>
 <html lang="en">
@@ -39,6 +41,7 @@ class HTMLReportGenerator:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{html.escape(self.report_title)}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         {self._get_styles()}
     </style>
@@ -56,9 +59,12 @@ class HTMLReportGenerator:
         <nav class="toc no-print">
             <h2>Table of Contents</h2>
             <ul>
+                <li><a href="#visualizations">📊 Data Quality Visualizations</a></li>
                 {toc_html}
             </ul>
         </nav>
+
+        {visualizations_html}
 
         <main>
             {sections_html}
@@ -71,12 +77,278 @@ class HTMLReportGenerator:
 
     <script>
         {self._get_scripts()}
+        {self._get_chart_scripts(chart_data)}
     </script>
 </body>
 </html>"""
 
-    def _build_section(self, component: ReportComponent, section_id: str, number: int) -> str:
+    def _extract_total_rows(self, components: List[ReportComponent]) -> int:
+        for component in components:
+            try:
+                comp_name = component.__class__.__name__
+                if "DatasetOverview" in comp_name:
+                    summary = component.summarize() or {}
+                    shape = summary.get("dataset_shape", {})
+                    if isinstance(shape, dict):
+                        return shape.get("rows", 0)
+            except Exception:
+                pass
+        return 0
+
+    def _extract_chart_data(self, components: List[ReportComponent]) -> dict:
+        chart_data = {
+            "missing_values": {},
+            "outlier_ratios": {},
+            "quality_metrics": {},
+            "type_distribution": {}
+        }
+
+        def to_python_float(val):
+            """Convert numpy types to plain Python float."""
+            if val is None:
+                return None
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return None
+
+        for component in components:
+            try:
+                summary = component.summarize() or {}
+                comp_name = component.__class__.__name__
+
+                if "MissingValues" in comp_name:
+                    worst_cols = summary.get("worst_columns", [])
+                    for col, ratio in worst_cols[:10]:
+                        val = to_python_float(ratio)
+                        if val and val > 0:
+                            chart_data["missing_values"][col] = round(val * 100, 2)
+
+                elif "DatasetOverview" in comp_name:
+                    type_dist = summary.get("type_distribution", {})
+                    if type_dist:
+                        chart_data["type_distribution"] = {k: int(v) for k, v in type_dist.items()}
+
+                elif "CategoricalOutlier" in comp_name:
+                    val = to_python_float(summary.get("outlier_ratio"))
+                    if val is not None and val > 0:
+                        chart_data["outlier_ratios"]["Categorical Outliers"] = round(val * 100, 2)
+
+                elif "OutlierDetection" in comp_name:
+                    val = to_python_float(summary.get("outlier_ratio"))
+                    if val is not None and val > 0:
+                        chart_data["outlier_ratios"]["Numeric Outliers"] = round(val * 100, 2)
+
+                elif "Distribution" in comp_name:
+                    val = to_python_float(summary.get("high_error_ratio") or summary.get("anomaly_ratio"))
+                    if val is not None and val > 0:
+                        chart_data["quality_metrics"]["Distribution Anomalies"] = round(val * 100, 2)
+
+                elif "NearDuplicate" in comp_name:
+                    val = to_python_float(summary.get("near_duplicate_ratio"))
+                    if val is not None:
+                        chart_data["quality_metrics"]["Near Duplicates"] = round(val * 100, 2)
+
+                elif "ExactDuplicate" in comp_name or comp_name == "ExactDuplicateDetectionComponent":
+                    val = to_python_float(summary.get("duplicate_ratio"))
+                    if val is not None:
+                        chart_data["quality_metrics"]["Exact Duplicates"] = round(val * 100, 2)
+
+                elif "LabelNoise" in comp_name:
+                    val = to_python_float(summary.get("noise_ratio"))
+                    if val is not None and val > 0:
+                        chart_data["quality_metrics"]["Label Noise"] = round(val * 100, 2)
+
+                elif "CompositeQuality" in comp_name:
+                    val = to_python_float(summary.get("data_readiness_score") or summary.get("overall_quality_score"))
+                    if val is not None and val > 0:
+                        chart_data["quality_metrics"]["Quality Score"] = round(val * 100, 2)
+
+                elif "RelationalConsistency" in comp_name:
+                    val = to_python_float(summary.get("overall_consistency_score"))
+                    if val is not None and 0 < val < 1:
+                        chart_data["quality_metrics"]["Consistency Issues"] = round((1 - val) * 100, 2)
+
+            except Exception:
+                pass
+
+        return chart_data
+
+    def _build_visualizations_section(self, chart_data: dict) -> str:
+        charts_html = []
+
+        if chart_data.get("missing_values"):
+            charts_html.append("""
+            <div class="chart-card">
+                <h4>📊 Missing Values by Column</h4>
+                <div class="chart-container"><canvas id="missingValuesChart"></canvas></div>
+            </div>""")
+
+        if chart_data.get("type_distribution"):
+            charts_html.append("""
+            <div class="chart-card doughnut-chart">
+                <h4>🔢 Data Type Distribution</h4>
+                <div class="chart-container"><canvas id="typeDistributionChart"></canvas></div>
+            </div>""")
+
+        if chart_data.get("outlier_ratios"):
+            charts_html.append("""
+            <div class="chart-card">
+                <h4>⚠️ Outlier Ratios</h4>
+                <div class="chart-container"><canvas id="outlierRatiosChart"></canvas></div>
+            </div>""")
+
+        if chart_data.get("quality_metrics"):
+            charts_html.append("""
+            <div class="chart-card">
+                <h4>✅ Quality Metrics Overview</h4>
+                <div class="chart-container"><canvas id="qualityMetricsChart"></canvas></div>
+            </div>""")
+
+        if not charts_html:
+            return ""
+
+        return f"""
+        <section id="visualizations" class="component-section visualizations-section">
+            <h2><span class="section-number">📊</span> Data Quality Visualizations</h2>
+            <div class="charts-grid">
+                {''.join(charts_html)}
+            </div>
+        </section>"""
+
+    def _get_chart_scripts(self, chart_data: dict) -> str:
+        import json
+        scripts = []
+
+        if chart_data.get("missing_values"):
+            labels = json.dumps(list(chart_data["missing_values"].keys()))
+            values = json.dumps(list(chart_data["missing_values"].values()))
+            scripts.append(f"""
+            new Chart(document.getElementById('missingValuesChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        label: 'Missing %',
+                        data: {values},
+                        backgroundColor: 'rgba(239, 68, 68, 0.7)',
+                        borderColor: 'rgba(239, 68, 68, 1)',
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{ 
+                        legend: {{ display: false }},
+                        title: {{ display: false }}
+                    }},
+                    scales: {{ 
+                        y: {{ 
+                            beginAtZero: true, 
+                            max: 100, 
+                            title: {{ display: true, text: 'Missing (%)' }} 
+                        }},
+                        x: {{
+                            ticks: {{ font: {{ size: 12 }} }}
+                        }}
+                    }}
+                }}
+            }});""")
+
+        if chart_data.get("type_distribution"):
+            labels = json.dumps(list(chart_data["type_distribution"].keys()))
+            values = json.dumps(list(chart_data["type_distribution"].values()))
+            scripts.append(f"""
+            new Chart(document.getElementById('typeDistributionChart'), {{
+                type: 'doughnut',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        data: {values},
+                        backgroundColor: ['rgba(59, 130, 246, 0.7)', 'rgba(16, 185, 129, 0.7)', 'rgba(245, 158, 11, 0.7)', 'rgba(139, 92, 246, 0.7)', 'rgba(236, 72, 153, 0.7)'],
+                        borderWidth: 2
+                    }}]
+                }},
+                options: {{ 
+                    responsive: true, 
+                    maintainAspectRatio: false,
+                    plugins: {{ 
+                        legend: {{ 
+                            position: 'right',
+                            labels: {{ font: {{ size: 14 }}, padding: 20 }}
+                        }}
+                    }}
+                }}
+            }});""")
+
+        if chart_data.get("outlier_ratios"):
+            labels = json.dumps(list(chart_data["outlier_ratios"].keys()))
+            values = json.dumps(list(chart_data["outlier_ratios"].values()))
+            scripts.append(f"""
+            new Chart(document.getElementById('outlierRatiosChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        label: 'Outlier %',
+                        data: {values},
+                        backgroundColor: ['rgba(245, 158, 11, 0.7)', 'rgba(139, 92, 246, 0.7)'],
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {{ legend: {{ display: false }} }},
+                    scales: {{ 
+                        x: {{ 
+                            beginAtZero: true, 
+                            max: 100, 
+                            title: {{ display: true, text: 'Percentage (%)' }} 
+                        }},
+                        y: {{
+                            ticks: {{ font: {{ size: 14 }} }}
+                        }}
+                    }}
+                }}
+            }});""")
+
+        if chart_data.get("quality_metrics"):
+            labels = json.dumps(list(chart_data["quality_metrics"].keys()))
+            values = json.dumps(list(chart_data["quality_metrics"].values()))
+            colors = json.dumps(['rgba(239, 68, 68, 0.7)' if 'Duplicate' in l or 'Noise' in l or 'Anomal' in l or 'Issues' in l else 'rgba(16, 185, 129, 0.7)' for l in chart_data["quality_metrics"].keys()])
+            scripts.append(f"""
+            new Chart(document.getElementById('qualityMetricsChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        label: 'Value (%)',
+                        data: {values},
+                        backgroundColor: {colors},
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{ legend: {{ display: false }} }},
+                    scales: {{ 
+                        y: {{ beginAtZero: true, max: 100 }},
+                        x: {{
+                            ticks: {{ font: {{ size: 12 }} }}
+                        }}
+                    }}
+                }}
+            }});""")
+
+        return '\n'.join(scripts)
+
+    def _build_section(self, component: ReportComponent, section_id: str, number: int, total_rows: int = 0) -> str:
         name = self._format_name(component.__class__.__name__)
+        component_name = component.__class__.__name__
 
         try:
             raw_justification = component.justify() or "N/A"
@@ -91,7 +363,7 @@ class HTMLReportGenerator:
 
         summary_rows = ""
         for key, value in summary.items():
-            formatted_value = self._format_value(value)
+            formatted_value = self._format_value_with_context(key, value, total_rows, component_name)
             summary_rows += f"""
             <tr>
                 <td class="key">{html.escape(str(key))}</td>
@@ -371,6 +643,74 @@ class HTMLReportGenerator:
 
         return ''.join(formatted_parts) if formatted_parts else text
 
+    def _format_value_with_context(self, key: str, value, total_rows: int, component_name: str) -> str:
+        key_lower = key.lower()
+
+        ratio_keys = [
+            'outlier_ratio', 'duplicate_ratio', 'near_duplicate_ratio', 'noise_ratio',
+            'high_error_ratio', 'violation_ratio', 'overall_consistency_score',
+            'data_readiness_score', 'ensemble_agreement', 'noise_type_confidence'
+        ]
+
+        count_keys = [
+            'affected_rows', 'suspicious_sample_count', 'total_violations',
+            'total_pairs', 'duplicate_groups', 'cluster_count', 'violation_count'
+        ]
+
+        if key_lower in [k.lower() for k in ratio_keys] and isinstance(value, (int, float)):
+            if total_rows > 0:
+                if value <= 1:
+                    pct = value * 100
+                    abs_count = int(round(value * total_rows))
+                    if 'score' in key_lower or 'confidence' in key_lower or 'agreement' in key_lower:
+                        return f"<span class='metric-highlight'>{pct:.1f}%</span>"
+                    else:
+                        return f"<span class='metric-highlight'>{pct:.1f}%</span> <span class='metric-detail'>({abs_count:,} of {total_rows:,} rows)</span>"
+                else:
+                    return f"<span class='metric-highlight'>{value:.2f}</span>"
+            else:
+                if value <= 1:
+                    return f"<span class='metric-highlight'>{value*100:.1f}%</span>"
+                return f"{value:.2f}"
+
+        if key_lower in [k.lower() for k in count_keys] and isinstance(value, (int, float)):
+            count = int(value)
+            if total_rows > 0 and count > 0:
+                pct = (count / total_rows) * 100
+                return f"<span class='metric-highlight'>{count:,}</span> <span class='metric-detail'>({pct:.1f}% of {total_rows:,} rows)</span>"
+            return f"<span class='metric-highlight'>{count:,}</span>"
+
+        if key_lower == 'worst_columns' and isinstance(value, list):
+            return self._format_worst_columns(value, total_rows)
+
+        if key_lower == 'example_outliers' and isinstance(value, list):
+            return self._format_examples_list(value)
+
+        if key_lower == 'example_violations' and isinstance(value, list):
+            return self._format_examples_list(value)
+
+        return self._format_value(value)
+
+    def _format_worst_columns(self, columns: list, total_rows: int) -> str:
+        if not columns:
+            return "<em>None</em>"
+
+        items = []
+        for col_data in columns[:5]:
+            if isinstance(col_data, tuple) and len(col_data) == 2:
+                col_name, ratio = col_data
+                pct = ratio * 100
+                if total_rows > 0:
+                    abs_count = int(round(ratio * total_rows))
+                    items.append(f'<div class="tuple-item"><strong>{html.escape(str(col_name))}:</strong> {pct:.1f}% <span class="metric-detail">({abs_count:,} rows)</span></div>')
+                else:
+                    items.append(f'<div class="tuple-item"><strong>{html.escape(str(col_name))}:</strong> {pct:.1f}%</div>')
+
+        if len(columns) > 5:
+            items.append(f'<div class="tuple-item"><em>... and {len(columns) - 5} more</em></div>')
+
+        return '<div class="tuple-list">' + ''.join(items) + '</div>'
+
     def _format_value(self, value) -> str:
         """Format values for HTML display."""
         if isinstance(value, float):
@@ -597,6 +937,61 @@ class HTMLReportGenerator:
             background-color: #f8faff;
             padding: 1.5rem 2rem;
             border-radius: 12px;
+            margin-bottom: 2.5rem;
+            border: 1px solid #d1d9e6;
+        }
+
+        .visualizations-section {
+            background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+            border: 2px solid #0ea5e9;
+            margin-top: 1rem;
+        }
+
+        .charts-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+            margin-top: 1.5rem;
+        }
+
+        .chart-card {
+            background: white;
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            border: 1px solid #e2e8f0;
+        }
+
+        .chart-card h4 {
+            font-size: 1.2rem;
+            color: var(--primary);
+            margin-bottom: 1.5rem;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .chart-card canvas {
+            width: 100% !important;
+            height: 350px !important;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 350px;
+            width: 100%;
+        }
+
+        .chart-card.doughnut-chart .chart-container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .chart-card.doughnut-chart canvas {
+            max-width: 500px;
+            margin: 0 auto;
+            display: block;
+            padding: 1.5rem 2rem;
+            border-radius: 12px;
             margin-bottom: 2rem;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
             border: 1px solid #d1d9e6;
@@ -748,6 +1143,18 @@ class HTMLReportGenerator:
             font-family: 'Monaco', 'Consolas', monospace;
             font-size: 0.9rem;
             text-align: center;
+        }
+
+        .metric-highlight {
+            font-weight: 700;
+            color: #1e40af;
+            font-size: 1.1em;
+        }
+
+        .metric-detail {
+            color: #64748b;
+            font-size: 0.85em;
+            font-weight: normal;
         }
 
         .full-summary pre {

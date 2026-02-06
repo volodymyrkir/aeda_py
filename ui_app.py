@@ -157,10 +157,8 @@ class AEDAApp:
         # Center window
         self._center_window()
 
-        # Configure styles
         ModernStyle.configure_styles(self.root)
 
-        # Variables
         self.file_path = tk.StringVar()
         self.is_ml_dataset = tk.BooleanVar(value=False)
         self.target_column = tk.StringVar()
@@ -171,7 +169,20 @@ class AEDAApp:
         self.engine_var = tk.StringVar(value="pandas")
         self.use_recommended_engine = tk.BooleanVar(value=True)
 
-        # State
+        self.component_vars = {
+            "dataset_overview": tk.BooleanVar(value=True),
+            "missing_values": tk.BooleanVar(value=True),
+            "exact_duplicates": tk.BooleanVar(value=True),
+            "near_duplicates": tk.BooleanVar(value=True),
+            "outlier_detection": tk.BooleanVar(value=True),
+            "categorical_outliers": tk.BooleanVar(value=True),
+            "label_noise": tk.BooleanVar(value=True),
+            "relational_consistency": tk.BooleanVar(value=True),
+            "distribution_modeling": tk.BooleanVar(value=True),
+            "composite_quality": tk.BooleanVar(value=True),
+            "dataset_summary": tk.BooleanVar(value=True),
+        }
+
         self.dataset: Optional[Dataset] = None
         self.columns: list = []
         self.is_running = False
@@ -236,6 +247,9 @@ class AEDAApp:
 
         # ML/DL Options Card
         self._build_ml_card(main_frame)
+
+        # Component Selection Card
+        self._build_component_selection_card(main_frame)
 
         # Progress Section
         self._build_progress_section(main_frame)
@@ -478,6 +492,89 @@ class AEDAApp:
                                     style="Card.TLabel")
         self.target_hint.configure(foreground=ModernStyle.TEXT_SECONDARY)
         self.target_hint.pack(anchor=tk.W, pady=(5, 0))
+
+    def _build_component_selection_card(self, parent):
+        card = self._create_card(parent, "🧩 Component Selection")
+
+        hint_label = ttk.Label(card,
+                              text="Select which analysis components to run:",
+                              style="Card.TLabel")
+        hint_label.pack(anchor=tk.W, pady=(5, 10))
+
+        components_frame = ttk.Frame(card, style="Card.TFrame")
+        components_frame.pack(fill=tk.X)
+
+        left_frame = ttk.Frame(components_frame, style="Card.TFrame")
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        right_frame = ttk.Frame(components_frame, style="Card.TFrame")
+        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        component_labels = {
+            "dataset_overview": "📊 Dataset Overview",
+            "missing_values": "❓ Missing Values",
+            "exact_duplicates": "📋 Exact Duplicates",
+            "near_duplicates": "🔍 Near Duplicates",
+            "outlier_detection": "📈 Outlier Detection",
+            "categorical_outliers": "🏷️ Categorical Outliers",
+            "label_noise": "🏷️ Label Noise (ML only)",
+            "relational_consistency": "🔗 Relational Consistency",
+            "distribution_modeling": "📉 Distribution Modeling",
+            "composite_quality": "⭐ Composite Quality Score",
+            "dataset_summary": "📝 Dataset Summary (LLM)",
+        }
+
+        left_components = list(component_labels.items())[:6]
+        right_components = list(component_labels.items())[6:]
+
+        for key, label in left_components:
+            cb = ttk.Checkbutton(left_frame,
+                                text=label,
+                                variable=self.component_vars[key],
+                                style="Card.TCheckbutton")
+            cb.pack(anchor=tk.W, pady=2)
+
+        for key, label in right_components:
+            cb = ttk.Checkbutton(right_frame,
+                                text=label,
+                                variable=self.component_vars[key],
+                                style="Card.TCheckbutton")
+            cb.pack(anchor=tk.W, pady=2)
+
+        buttons_frame = ttk.Frame(card, style="Card.TFrame")
+        buttons_frame.pack(fill=tk.X, pady=(10, 0))
+
+        select_all_btn = tk.Button(buttons_frame,
+                                  text="Select All",
+                                  command=self._select_all_components,
+                                  bg=ModernStyle.BG_TERTIARY,
+                                  fg=ModernStyle.TEXT_PRIMARY,
+                                  font=(ModernStyle.FONT_FAMILY, ModernStyle.FONT_SIZE_SMALL),
+                                  relief=tk.FLAT,
+                                  cursor="hand2",
+                                  padx=10,
+                                  pady=3)
+        select_all_btn.pack(side=tk.LEFT, padx=(0, 5))
+
+        deselect_all_btn = tk.Button(buttons_frame,
+                                    text="Deselect All",
+                                    command=self._deselect_all_components,
+                                    bg=ModernStyle.BG_TERTIARY,
+                                    fg=ModernStyle.TEXT_PRIMARY,
+                                    font=(ModernStyle.FONT_FAMILY, ModernStyle.FONT_SIZE_SMALL),
+                                    relief=tk.FLAT,
+                                    cursor="hand2",
+                                    padx=10,
+                                    pady=3)
+        deselect_all_btn.pack(side=tk.LEFT)
+
+    def _select_all_components(self):
+        for var in self.component_vars.values():
+            var.set(True)
+
+    def _deselect_all_components(self):
+        for var in self.component_vars.values():
+            var.set(False)
 
     def _build_progress_section(self, parent):
         """Build the progress section."""
@@ -750,29 +847,40 @@ class AEDAApp:
             context = AnalysisContext(self.dataset)
             report = Report()
 
-            # Define components
-            components_config = [
-                ("Dataset Overview", lambda: DatasetOverviewComponent(context)),
-                ("Missing Values", lambda: MissingValuesReport(context)),
-                ("Exact Duplicates", lambda: ExactDuplicateDetectionComponent(context)),
-                ("Near Duplicates", lambda: NearDuplicateDetectionComponent(context)),
-                ("Outlier Detection", lambda: OutlierDetectionComponent(context)),
-                ("Categorical Outliers", lambda: CategoricalOutlierDetectionComponent(context)),
-            ]
+            components_config = []
 
-            # Add label noise only if ML dataset with target
-            if self.is_ml_dataset.get() and self.target_column.get():
+            if self.component_vars["dataset_overview"].get():
+                components_config.append(("Dataset Overview", lambda: DatasetOverviewComponent(context)))
+            if self.component_vars["missing_values"].get():
+                components_config.append(("Missing Values", lambda: MissingValuesReport(context)))
+            if self.component_vars["exact_duplicates"].get():
+                components_config.append(("Exact Duplicates", lambda: ExactDuplicateDetectionComponent(context)))
+            if self.component_vars["near_duplicates"].get():
+                components_config.append(("Near Duplicates", lambda: NearDuplicateDetectionComponent(context)))
+            if self.component_vars["outlier_detection"].get():
+                components_config.append(("Outlier Detection", lambda: OutlierDetectionComponent(context)))
+            if self.component_vars["categorical_outliers"].get():
+                components_config.append(("Categorical Outliers", lambda: CategoricalOutlierDetectionComponent(context)))
+
+            if self.is_ml_dataset.get() and self.target_column.get() and self.component_vars["label_noise"].get():
+                target = self.target_column.get()
                 components_config.append(
                     ("Label Noise Detection",
-                     lambda: LabelNoiseDetectionComponent(context, self.target_column.get()))
+                     lambda t=target: LabelNoiseDetectionComponent(context, t))
                 )
 
-            components_config.extend([
-                ("Relational Consistency", lambda: RelationalConsistencyComponent(context)),
-                ("Distribution Modeling", lambda: DistributionModelingComponent(context)),
-                ("Composite Quality Score", lambda: CompositeQualityScoreComponent(context)),
-                ("Dataset Summary", lambda: LLMDatasetSummaryComponent(context)),
-            ])
+            if self.component_vars["relational_consistency"].get():
+                components_config.append(("Relational Consistency", lambda: RelationalConsistencyComponent(context)))
+            if self.component_vars["distribution_modeling"].get():
+                components_config.append(("Distribution Modeling", lambda: DistributionModelingComponent(context)))
+            if self.component_vars["composite_quality"].get():
+                components_config.append(("Composite Quality Score", lambda: CompositeQualityScoreComponent(context)))
+            if self.component_vars["dataset_summary"].get():
+                components_config.append(("Dataset Summary", lambda: LLMDatasetSummaryComponent(context)))
+
+            if not components_config:
+                self._add_log("No components selected. Please select at least one component.")
+                return
 
             total_components = len(components_config)
 

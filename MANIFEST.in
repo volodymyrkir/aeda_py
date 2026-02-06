@@ -1,0 +1,8 @@
+include LICENSE
+include README.md
+include requirements.txt
+recursive-include aeda *.py
+recursive-include core *.py
+recursive-include preprocessing *.py
+recursive-include report_components *.py
+recursive-include utils *.py
