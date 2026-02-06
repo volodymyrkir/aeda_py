@@ -8,3 +8,4 @@ transformers
 accelerate
 polars
 pyinstaller
+openpyxl

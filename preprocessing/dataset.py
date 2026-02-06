@@ -9,6 +9,7 @@ from utils.consts import POLARS_SIZE_THRESHOLD_MB
 
 Engine = Literal["pandas", "polars"]
 
+
 class Dataset:
     def __init__(
         self,
@@ -28,7 +29,6 @@ class Dataset:
             self._engine = engine
         else:
             self._engine = self._recommended_engine
-
 
         self._df_pandas: Optional[pd.DataFrame] = None
         self._df_polars = None
@@ -70,6 +70,7 @@ class Dataset:
 
     def _load_as_pandas(self):
         ext = self.path.suffix.lower()
+
         if ext == ".csv":
             self._df_pandas = pd.read_csv(self.path)
         elif ext == ".parquet":
@@ -78,12 +79,15 @@ class Dataset:
             self._df_pandas = pd.read_json(self.path)
         elif ext == ".orc":
             self._df_pandas = pd.read_orc(self.path)
+        elif ext == ".xlsx":
+            # Requires: openpyxl
+            self._df_pandas = pd.read_excel(self.path, engine="openpyxl")
         else:
             raise ValueError(f"Unsupported file format: {ext}")
 
     def _load_as_polars(self):
-
         ext = self.path.suffix.lower()
+
         if ext == ".csv":
             self._df_polars = pl.read_csv(self.path)
         elif ext == ".parquet":
@@ -94,6 +98,12 @@ class Dataset:
             self._df_pandas = pd.read_orc(self.path)
             self._df_polars = pl.from_pandas(self._df_pandas)
             return
+        elif ext == ".xlsx":
+            # Polars Excel support is not guaranteed across versions,
+            # so we load with pandas and convert.
+            self._df_pandas = pd.read_excel(self.path, engine="openpyxl")
+            self._df_polars = pl.from_pandas(self._df_pandas)
+            return
         else:
             raise ValueError(f"Unsupported file format: {ext}")
 
@@ -102,7 +112,6 @@ class Dataset:
     def switch_engine(self, engine: Engine) -> "Dataset":
         if engine == self._engine:
             return self
-
         return Dataset(str(self.path), engine=engine, force_engine=True)
 
     def _infer_schema(self) -> dict:
@@ -151,3 +160,6 @@ class Dataset:
     def from_orc(cls, path: str, engine: Optional[Engine] = None) -> "Dataset":
         return cls(path, engine=engine)
 
+    @classmethod
+    def from_xlsx(cls, path: str, engine: Optional[Engine] = None) -> "Dataset":
+        return cls(path, engine=engine)
