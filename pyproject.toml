@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aeda-py"
-version = "1.0.0"
+version = "1.0.1"
 description = "Automated Exploratory Data Analysis with LLM-powered insights"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
-    {name = "AEDA Team"}
+    {name = "Volodymyr Kiriushyn", email = "zalorderon3331@gmail.com"}
 ]
 keywords = ["data-quality", "eda", "machine-learning", "data-analysis", "llm"]
 classifiers = [
@@ -34,18 +34,8 @@ dependencies = [
     "transformers>=4.30.0",
     "shap>=0.42.0",
     "pyarrow>=10.0.0",
+    "polars>=0.15.0"
 ]
-
-[project.optional-dependencies]
-polars = ["polars>=0.15.0"]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "black>=23.0.0",
-    "isort>=5.12.0",
-    "mypy>=1.0.0",
-]
-all = ["aeda-py[polars,dev]"]
 
 [project.urls]
 Homepage = "https://github.com/aeda/aeda"

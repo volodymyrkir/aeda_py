@@ -11,13 +11,13 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import CalibratedClassifierCV
-from scipy import stats
-from scipy.special import rel_entr
 
 from report_components.base_component import ReportComponent
 from utils.consts import (
     NUM_EXAMPLES_LLM, LABEL_NOISE_CV_FOLDS, LABEL_NOISE_N_PERMUTATIONS,
-    LABEL_NOISE_CONFIDENCE_THRESHOLD, LABEL_NOISE_MIN_ROWS
+    LABEL_NOISE_CONFIDENCE_THRESHOLD, LABEL_NOISE_MIN_ROWS,
+    LABEL_NOISE_MAX_SAMPLE_SIZE, LABEL_NOISE_LARGE_DATASET_CV_FOLDS,
+    LABEL_NOISE_LARGE_DATASET_PERMUTATIONS, LARGE_DATASET_ROW_THRESHOLD
 )
 
 
@@ -53,7 +53,8 @@ class LabelNoiseDetectionComponent(ReportComponent):
         confidence_threshold: float = LABEL_NOISE_CONFIDENCE_THRESHOLD,
         use_ensemble: bool = True,
         calibrate_probabilities: bool = True,
-        use_llm_explanations: bool = True
+        use_llm_explanations: bool = True,
+        max_sample_size: int = LABEL_NOISE_MAX_SAMPLE_SIZE
     ):
         super().__init__(context, use_llm_explanations)
         self.target_column = target_column
@@ -62,58 +63,77 @@ class LabelNoiseDetectionComponent(ReportComponent):
         self.confidence_threshold = confidence_threshold
         self.use_ensemble = use_ensemble
         self.calibrate_probabilities = calibrate_probabilities
+        self.max_sample_size = max_sample_size
         self._result: Optional[NoiseAnalysisResult] = None
+        self._is_sampled = False
+        self._original_size = 0
+        self._sample_indices = None
 
-    def _get_classifier_ensemble(self) -> List[Tuple[str, Any]]:
-        classifiers = [
-            ("RandomForest", RandomForestClassifier(
-                n_estimators=100, max_depth=10, min_samples_leaf=5,
-                random_state=42, n_jobs=-1
-            )),
-            ("GradientBoosting", GradientBoostingClassifier(
-                n_estimators=100, max_depth=5, learning_rate=0.1,
-                random_state=42
-            )),
-            ("LogisticRegression", LogisticRegression(
-                max_iter=1000, C=1.0, random_state=42, n_jobs=-1
-            )),
-            ("MLP", MLPClassifier(
-                hidden_layer_sizes=(64, 32), max_iter=500,
-                early_stopping=True, random_state=42
-            ))
-        ]
+    def _get_classifier_ensemble(self, is_large_dataset: bool = False) -> List[Tuple[str, Any]]:
+        if is_large_dataset:
+            classifiers = [
+                ("RandomForest", RandomForestClassifier(
+                    n_estimators=50, max_depth=8, min_samples_leaf=10,
+                    random_state=42, n_jobs=-1
+                )),
+                ("LogisticRegression", LogisticRegression(
+                    max_iter=500, C=1.0, random_state=42, n_jobs=-1
+                ))
+            ]
+        else:
+            classifiers = [
+                ("RandomForest", RandomForestClassifier(
+                    n_estimators=100, max_depth=10, min_samples_leaf=5,
+                    random_state=42, n_jobs=-1
+                )),
+                ("GradientBoosting", GradientBoostingClassifier(
+                    n_estimators=100, max_depth=5, learning_rate=0.1,
+                    random_state=42
+                )),
+                ("LogisticRegression", LogisticRegression(
+                    max_iter=1000, C=1.0, random_state=42, n_jobs=-1
+                )),
+                ("MLP", MLPClassifier(
+                    hidden_layer_sizes=(64, 32), max_iter=500,
+                    early_stopping=True, random_state=42
+                ))
+            ]
         return classifiers
 
+    def _stratified_sample(self, X: np.ndarray, y: np.ndarray, n_samples: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        from sklearn.model_selection import train_test_split
+        n_total = len(y)
+        if n_total <= n_samples:
+            return X, y, np.arange(n_total)
+        sample_ratio = n_samples / n_total
+        try:
+            _, X_sample, _, y_sample, _, sample_indices = train_test_split(
+                X, y, np.arange(n_total),
+                test_size=sample_ratio,
+                stratify=y,
+                random_state=42
+            )
+        except ValueError:
+            rng = np.random.RandomState(42)
+            sample_indices = rng.choice(n_total, size=n_samples, replace=False)
+            X_sample = X[sample_indices]
+            y_sample = y[sample_indices]
+        return X_sample, y_sample, sample_indices
+
     def _compute_out_of_fold_probabilities(
-        self, X: np.ndarray, y: np.ndarray, n_classes: int
+        self, X: np.ndarray, y: np.ndarray, n_classes: int, is_large_dataset: bool = False
     ) -> Tuple[np.ndarray, float]:
-        """
-        Compute out-of-fold predicted probabilities using cross-validation.
-
-        This is critical for Confident Learning as it prevents information
-        leakage - each sample's probability is estimated by a model that
-        never saw that sample during training.
-
-        Args:
-            X: Feature matrix
-            y: Label vector
-            n_classes: Number of unique classes
-
-        Returns:
-            Tuple of (probability matrix, ensemble agreement score)
-        """
         kf = StratifiedKFold(
             n_splits=self.cv_folds, shuffle=True, random_state=42
         )
 
         if self.use_ensemble:
-            classifiers = self._get_classifier_ensemble()
+            classifiers = self._get_classifier_ensemble(is_large_dataset)
         else:
             classifiers = [("RandomForest", RandomForestClassifier(
-                n_estimators=100, random_state=42
+                n_estimators=50 if is_large_dataset else 100, random_state=42
             ))]
 
-        # Store predictions from each classifier
         all_predictions = []
 
         for clf_name, clf in classifiers:
@@ -124,18 +144,15 @@ class LabelNoiseDetectionComponent(ReportComponent):
                     X_train, X_val = X[train_idx], X[val_idx]
                     y_train = y[train_idx]
 
-                    # Scale features for non-tree-based models
                     if clf_name in ["LogisticRegression", "MLP"]:
                         scaler = StandardScaler()
                         X_train = scaler.fit_transform(X_train)
                         X_val = scaler.transform(X_val)
 
-                    # Clone classifier for each fold
                     from sklearn.base import clone
                     fold_clf = clone(clf)
 
-                    # Optionally calibrate probabilities
-                    if self.calibrate_probabilities and clf_name != "LogisticRegression":
+                    if self.calibrate_probabilities and clf_name != "LogisticRegression" and not is_large_dataset:
                         fold_clf = CalibratedClassifierCV(
                             fold_clf, method='isotonic', cv=3
                         )
@@ -143,7 +160,6 @@ class LabelNoiseDetectionComponent(ReportComponent):
                     fold_clf.fit(X_train, y_train)
                     fold_probs = fold_clf.predict_proba(X_val)
 
-                    # Handle missing classes in fold
                     if fold_probs.shape[1] < n_classes:
                         full_probs = np.zeros((len(val_idx), n_classes))
                         classes_in_fold = fold_clf.classes_
@@ -270,7 +286,6 @@ class LabelNoiseDetectionComponent(ReportComponent):
         if len(off_diagonal) == 0 or np.all(off_diagonal < 0.01):
             return NoiseType.UNIFORM, 0.95  # Very clean data
 
-        # Test for uniform noise: all off-diagonal elements similar
         off_diag_std = np.std(off_diagonal)
         off_diag_mean = np.mean(off_diagonal)
 
@@ -279,7 +294,6 @@ class LabelNoiseDetectionComponent(ReportComponent):
         if coefficient_of_variation < 0.3:
             return NoiseType.UNIFORM, 1.0 - coefficient_of_variation
 
-        # Test for class-conditional: significant variance in per-class noise rates
         per_class_std = np.std(per_class_noise)
         per_class_mean = np.mean(per_class_noise)
         class_cv = per_class_std / (per_class_mean + 1e-10)
@@ -287,24 +301,25 @@ class LabelNoiseDetectionComponent(ReportComponent):
         if class_cv > 0.5:
             return NoiseType.CLASS_CONDITIONAL, min(1.0, class_cv)
 
-        # Default to instance-dependent
         return NoiseType.INSTANCE_DEPENDENT, 0.6
 
     def _permutation_test(
         self, X: np.ndarray, y: np.ndarray, observed_noise_ratio: float,
-        n_classes: int
+        n_classes: int, is_large_dataset: bool = False
     ) -> Dict[str, Any]:
-        if self.n_permutations < 10:
+        if self.n_permutations < 5:
             return {"p_value": None, "significant": None, "message": "Skipped"}
 
         permuted_ratios = []
         rng = np.random.RandomState(42)
 
-        for _ in range(min(self.n_permutations, 20)):
+        max_perms = 5 if is_large_dataset else min(self.n_permutations, 20)
+
+        for _ in range(max_perms):
             y_perm = rng.permutation(y)
             try:
                 probs_perm, _ = self._compute_out_of_fold_probabilities(
-                    X, y_perm, n_classes
+                    X, y_perm, n_classes, is_large_dataset
                 )
                 joint_perm, _, scores_perm = self._estimate_confident_joint(
                     y_perm, probs_perm, n_classes
@@ -358,9 +373,21 @@ class LabelNoiseDetectionComponent(ReportComponent):
             self._set_empty_result("At least 2 classes required for noise detection")
             return
 
+        self._original_size = len(y)
+        is_large_dataset = len(y) > LARGE_DATASET_ROW_THRESHOLD
+
+        if is_large_dataset:
+            self.cv_folds = min(self.cv_folds, LABEL_NOISE_LARGE_DATASET_CV_FOLDS)
+            self.n_permutations = min(self.n_permutations, LABEL_NOISE_LARGE_DATASET_PERMUTATIONS)
+            self.calibrate_probabilities = False
+
+        if len(y) > self.max_sample_size:
+            X_array, y, self._sample_indices = self._stratified_sample(X_array, y, self.max_sample_size)
+            self._is_sampled = True
+
         try:
             pred_probs, ensemble_agreement = self._compute_out_of_fold_probabilities(
-                X_array, y, n_classes
+                X_array, y, n_classes, is_large_dataset
             )
 
             confident_joint, thresholds, noise_scores = self._estimate_confident_joint(
@@ -370,7 +397,13 @@ class LabelNoiseDetectionComponent(ReportComponent):
             transition_matrix = self._estimate_noise_transition_matrix(confident_joint)
 
             noise_mask = noise_scores > self.confidence_threshold
-            noise_indices = np.where(noise_mask)[0].tolist()
+            noise_indices_in_sample = np.where(noise_mask)[0].tolist()
+
+            if self._is_sampled and self._sample_indices is not None:
+                noise_indices = [int(self._sample_indices[i]) for i in noise_indices_in_sample]
+            else:
+                noise_indices = noise_indices_in_sample
+
             noise_ratio = float(np.mean(noise_mask))
 
             per_class_noise = {}
@@ -388,9 +421,9 @@ class LabelNoiseDetectionComponent(ReportComponent):
                 transition_matrix, per_class_noise_array
             )
 
-            if self.n_permutations > 0 and len(noise_indices) > 0:
+            if self.n_permutations > 0 and len(noise_indices) > 0 and not is_large_dataset:
                 stat_significance = self._permutation_test(
-                    X_array, y, noise_ratio, n_classes
+                    X_array, y, noise_ratio, n_classes, is_large_dataset
                 )
             else:
                 stat_significance = {"p_value": None, "significant": None}
@@ -400,6 +433,18 @@ class LabelNoiseDetectionComponent(ReportComponent):
                 estimated_joint = confident_joint / joint_sum
             else:
                 estimated_joint = confident_joint.astype(float)
+
+            metadata = {
+                "n_samples": len(y),
+                "n_classes": n_classes,
+                "n_features": X_array.shape[1],
+                "cv_folds": self.cv_folds,
+                "confidence_threshold": self.confidence_threshold,
+                "is_sampled": self._is_sampled,
+                "original_size": self._original_size,
+                "sample_size": len(y) if self._is_sampled else None,
+                "is_large_dataset": is_large_dataset
+            }
 
             self._result = NoiseAnalysisResult(
                 noise_indices=noise_indices,
@@ -413,13 +458,7 @@ class LabelNoiseDetectionComponent(ReportComponent):
                 per_class_noise_rates=per_class_noise,
                 statistical_significance=stat_significance,
                 ensemble_agreement=ensemble_agreement,
-                metadata={
-                    "n_samples": len(y),
-                    "n_classes": n_classes,
-                    "n_features": X_array.shape[1],
-                    "cv_folds": self.cv_folds,
-                    "confidence_threshold": self.confidence_threshold
-                }
+                metadata=metadata
             )
 
             self.context.shared_artifacts["label_noise_mask"] = noise_mask
