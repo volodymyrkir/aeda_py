@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Type
 
 
 @dataclass
@@ -20,29 +20,28 @@ class AnalysisConfig:
     engine: str = "auto"
     output_path: str = "data_quality_report.html"
     report_title: str = "AEDA Data Quality Report"
+    exclude_components: List[Type] = field(default_factory=list)
 
     def get_enabled_components(self) -> List[str]:
+        excluded_names = {cls.__name__ for cls in self.exclude_components}
+
+        component_map = {
+            "dataset_overview": ("DatasetOverviewComponent", self.dataset_overview),
+            "missing_values": ("MissingValuesReport", self.missing_values),
+            "exact_duplicates": ("ExactDuplicateDetectionComponent", self.exact_duplicates),
+            "near_duplicates": ("NearDuplicateDetectionComponent", self.near_duplicates),
+            "outlier_detection": ("OutlierDetectionComponent", self.outlier_detection),
+            "categorical_outliers": ("CategoricalOutlierDetectionComponent", self.categorical_outliers),
+            "label_noise": ("LabelNoiseDetectionComponent", self.label_noise and bool(self.target_column)),
+            "relational_consistency": ("RelationalConsistencyComponent", self.relational_consistency),
+            "distribution_modeling": ("DistributionModelingComponent", self.distribution_modeling),
+            "composite_quality": ("CompositeQualityScoreComponent", self.composite_quality),
+            "dataset_summary": ("LLMDatasetSummaryComponent", self.dataset_summary),
+        }
+
         components = []
-        if self.dataset_overview:
-            components.append("dataset_overview")
-        if self.missing_values:
-            components.append("missing_values")
-        if self.exact_duplicates:
-            components.append("exact_duplicates")
-        if self.near_duplicates:
-            components.append("near_duplicates")
-        if self.outlier_detection:
-            components.append("outlier_detection")
-        if self.categorical_outliers:
-            components.append("categorical_outliers")
-        if self.label_noise and self.target_column:
-            components.append("label_noise")
-        if self.relational_consistency:
-            components.append("relational_consistency")
-        if self.distribution_modeling:
-            components.append("distribution_modeling")
-        if self.composite_quality:
-            components.append("composite_quality")
-        if self.dataset_summary:
-            components.append("dataset_summary")
+        for key, (class_name, enabled) in component_map.items():
+            if enabled and class_name not in excluded_names:
+                components.append(key)
+
         return components
