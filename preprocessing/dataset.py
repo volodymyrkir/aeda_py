@@ -13,28 +13,41 @@ Engine = Literal["pandas", "polars"]
 class Dataset:
     def __init__(
         self,
-        path: str,
+        path: Optional[str] = None,
         engine: Optional[Engine] = None,
-        force_engine: bool = False
+        force_engine: bool = False,
+        dataframe: Optional[pd.DataFrame] = None
     ):
-        self.path = Path(path)
-        self.file_size_bytes = os.path.getsize(path)
-        self.file_size_mb = self.file_size_bytes / (1024 * 1024)
+        if dataframe is not None:
+            self.path = None
+            self.file_size_bytes = dataframe.memory_usage(deep=True).sum()
+            self.file_size_mb = self.file_size_bytes / (1024 * 1024)
+            self._df_pandas = dataframe
+            self._df_polars = None
+            self._engine = engine if engine else "pandas"
+            self._recommended_engine = "pandas"
+            self._schema: Optional[dict] = None
+        elif path is not None:
+            self.path = Path(path)
+            self.file_size_bytes = os.path.getsize(path)
+            self.file_size_mb = self.file_size_bytes / (1024 * 1024)
 
-        self._recommended_engine = self._determine_recommended_engine()
+            self._recommended_engine = self._determine_recommended_engine()
 
-        if force_engine and engine:
-            self._engine = engine
-        elif engine:
-            self._engine = engine
+            if force_engine and engine:
+                self._engine = engine
+            elif engine:
+                self._engine = engine
+            else:
+                self._engine = self._recommended_engine
+
+            self._df_pandas: Optional[pd.DataFrame] = None
+            self._df_polars = None
+            self._schema: Optional[dict] = None
+
+            self._load_data()
         else:
-            self._engine = self._recommended_engine
-
-        self._df_pandas: Optional[pd.DataFrame] = None
-        self._df_polars = None
-        self._schema: Optional[dict] = None
-
-        self._load_data()
+            raise ValueError("Either 'path' or 'dataframe' must be provided")
 
     def _determine_recommended_engine(self) -> Engine:
         return "polars" if self.file_size_mb > POLARS_SIZE_THRESHOLD_MB else "pandas"
@@ -112,7 +125,9 @@ class Dataset:
     def switch_engine(self, engine: Engine) -> "Dataset":
         if engine == self._engine:
             return self
-        return Dataset(str(self.path), engine=engine, force_engine=True)
+        if self.path is None:
+            return Dataset(dataframe=self.df, engine=engine)
+        return Dataset(path=str(self.path), engine=engine, force_engine=True)
 
     def _infer_schema(self) -> dict:
         schema = {
@@ -136,7 +151,7 @@ class Dataset:
 
     def get_info(self) -> dict:
         return {
-            "path": str(self.path),
+            "path": str(self.path) if self.path else "<DataFrame>",
             "file_size_mb": round(self.file_size_mb, 2),
             "engine": self._engine,
             "recommended_engine": self._recommended_engine,
@@ -146,20 +161,25 @@ class Dataset:
 
     @classmethod
     def from_csv(cls, path: str, engine: Optional[Engine] = None) -> "Dataset":
-        return cls(path, engine=engine)
+        return cls(path=path, engine=engine)
 
     @classmethod
     def from_parquet(cls, path: str, engine: Optional[Engine] = None) -> "Dataset":
-        return cls(path, engine=engine)
+        return cls(path=path, engine=engine)
 
     @classmethod
     def from_json(cls, path: str, engine: Optional[Engine] = None) -> "Dataset":
-        return cls(path, engine=engine)
+        return cls(path=path, engine=engine)
 
     @classmethod
     def from_orc(cls, path: str, engine: Optional[Engine] = None) -> "Dataset":
-        return cls(path, engine=engine)
+        return cls(path=path, engine=engine)
 
     @classmethod
     def from_xlsx(cls, path: str, engine: Optional[Engine] = None) -> "Dataset":
-        return cls(path, engine=engine)
+        return cls(path=path, engine=engine)
+
+    @classmethod
+    def from_dataframe(cls, df: pd.DataFrame, engine: Optional[Engine] = None) -> "Dataset":
+        return cls(dataframe=df, engine=engine)
+

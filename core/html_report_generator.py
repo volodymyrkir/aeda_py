@@ -100,7 +100,12 @@ class HTMLReportGenerator:
             "missing_values": {},
             "outlier_ratios": {},
             "quality_metrics": {},
-            "type_distribution": {}
+            "type_distribution": {},
+            "cardinality_distribution": {},
+            "completeness_by_column": {},
+            "dimension_scores": {},
+            "quality_issues": {},
+            "numeric_distributions": {}
         }
 
         def to_python_float(val):
@@ -112,22 +117,50 @@ class HTMLReportGenerator:
             except (TypeError, ValueError):
                 return None
 
+        total_rows = 0
+
         for component in components:
             try:
                 summary = component.summarize() or {}
                 comp_name = component.__class__.__name__
 
-                if "MissingValues" in comp_name:
-                    worst_cols = summary.get("worst_columns", [])
-                    for col, ratio in worst_cols[:10]:
-                        val = to_python_float(ratio)
-                        if val and val > 0:
-                            chart_data["missing_values"][col] = round(val * 100, 2)
-
-                elif "DatasetOverview" in comp_name:
+                if "DatasetOverview" in comp_name:
+                    total_rows = summary.get("dataset_shape", {}).get("rows", 0)
                     type_dist = summary.get("type_distribution", {})
                     if type_dist:
                         chart_data["type_distribution"] = {k: int(v) for k, v in type_dist.items()}
+
+                    if hasattr(component, 'result') and component.result:
+                        cardinality = component.result.get("cardinality", {})
+                        for col, info in cardinality.items():
+                            unique_count = info.get("unique_count", 0)
+                            if total_rows > 0:
+                                ratio = unique_count / total_rows
+                                if ratio > 0.8:
+                                    chart_data["cardinality_distribution"]["High"] = chart_data["cardinality_distribution"].get("High", 0) + 1
+                                elif ratio > 0.3:
+                                    chart_data["cardinality_distribution"]["Medium"] = chart_data["cardinality_distribution"].get("Medium", 0) + 1
+                                else:
+                                    chart_data["cardinality_distribution"]["Low"] = chart_data["cardinality_distribution"].get("Low", 0) + 1
+
+                        stats = component.result.get("basic_statistics", {})
+                        numeric_stats = stats.get("numeric", {})
+                        for col, col_stats in list(numeric_stats.items())[:8]:
+                            if isinstance(col_stats, dict):
+                                chart_data["numeric_distributions"][col] = {
+                                    "mean": to_python_float(col_stats.get("mean")),
+                                    "std": to_python_float(col_stats.get("std")),
+                                    "min": to_python_float(col_stats.get("min")),
+                                    "max": to_python_float(col_stats.get("max"))
+                                }
+
+                elif "MissingValues" in comp_name:
+                    worst_cols = summary.get("worst_columns", [])
+                    for col, ratio in worst_cols[:10]:
+                        val = to_python_float(ratio)
+                        if val is not None:
+                            chart_data["missing_values"][col] = round(val * 100, 2)
+                            chart_data["completeness_by_column"][col] = round((1 - val) * 100, 2)
 
                 elif "CategoricalOutlier" in comp_name:
                     val = to_python_float(summary.get("outlier_ratio"))
@@ -164,6 +197,24 @@ class HTMLReportGenerator:
                     if val is not None and val > 0:
                         chart_data["quality_metrics"]["Quality Score"] = round(val * 100, 2)
 
+                    dimension_scores = summary.get("dimension_scores", {})
+                    if dimension_scores:
+                        chart_data["dimension_scores"] = {
+                            k: round(to_python_float(v) * 100, 2)
+                            for k, v in dimension_scores.items()
+                            if to_python_float(v) is not None
+                        }
+
+                    high_severity = summary.get("high_severity_issues", 0)
+                    med_severity = summary.get("medium_severity_issues", 0)
+                    low_severity = summary.get("low_severity_issues", 0)
+                    if any([high_severity, med_severity, low_severity]):
+                        chart_data["quality_issues"] = {
+                            "High": high_severity,
+                            "Medium": med_severity,
+                            "Low": low_severity
+                        }
+
                 elif "RelationalConsistency" in comp_name:
                     val = to_python_float(summary.get("overall_consistency_score"))
                     if val is not None and 0 < val < 1:
@@ -172,17 +223,16 @@ class HTMLReportGenerator:
             except Exception:
                 pass
 
+        if chart_data["completeness_by_column"]:
+            for col in list(chart_data["completeness_by_column"].keys())[:10]:
+                pass
+        elif total_rows > 0:
+            pass
+
         return chart_data
 
     def _build_visualizations_section(self, chart_data: dict) -> str:
         charts_html = []
-
-        if chart_data.get("missing_values"):
-            charts_html.append("""
-            <div class="chart-card">
-                <h4>📊 Missing Values by Column</h4>
-                <div class="chart-container"><canvas id="missingValuesChart"></canvas></div>
-            </div>""")
 
         if chart_data.get("type_distribution"):
             charts_html.append("""
@@ -191,18 +241,60 @@ class HTMLReportGenerator:
                 <div class="chart-container"><canvas id="typeDistributionChart"></canvas></div>
             </div>""")
 
+        if chart_data.get("missing_values"):
+            charts_html.append("""
+            <div class="chart-card">
+                <h4>📊 Missing Values by Column</h4>
+                <div class="chart-container"><canvas id="missingValuesChart"></canvas></div>
+            </div>""")
+
+        if chart_data.get("completeness_by_column"):
+            charts_html.append("""
+            <div class="chart-card">
+                <h4>✅ Data Completeness by Column</h4>
+                <div class="chart-container"><canvas id="completenessChart"></canvas></div>
+            </div>""")
+
+        if chart_data.get("cardinality_distribution"):
+            charts_html.append("""
+            <div class="chart-card doughnut-chart">
+                <h4>🎯 Feature Cardinality Distribution</h4>
+                <div class="chart-container"><canvas id="cardinalityChart"></canvas></div>
+            </div>""")
+
         if chart_data.get("outlier_ratios"):
             charts_html.append("""
             <div class="chart-card">
-                <h4>⚠️ Outlier Ratios</h4>
+                <h4>⚠️ Outlier Detection Results</h4>
                 <div class="chart-container"><canvas id="outlierRatiosChart"></canvas></div>
             </div>""")
 
         if chart_data.get("quality_metrics"):
             charts_html.append("""
             <div class="chart-card">
-                <h4>✅ Quality Metrics Overview</h4>
+                <h4>📈 Quality Metrics Overview</h4>
                 <div class="chart-container"><canvas id="qualityMetricsChart"></canvas></div>
+            </div>""")
+
+        if chart_data.get("dimension_scores"):
+            charts_html.append("""
+            <div class="chart-card radar-chart">
+                <h4>🎯 Quality Dimensions (Composite Score)</h4>
+                <div class="chart-container"><canvas id="dimensionScoresChart"></canvas></div>
+            </div>""")
+
+        if chart_data.get("quality_issues"):
+            charts_html.append("""
+            <div class="chart-card">
+                <h4>🚨 Quality Issues by Severity</h4>
+                <div class="chart-container"><canvas id="qualityIssuesChart"></canvas></div>
+            </div>""")
+
+        if chart_data.get("numeric_distributions") and len(chart_data["numeric_distributions"]) > 0:
+            charts_html.append("""
+            <div class="chart-card wide-chart">
+                <h4>📊 Numeric Feature Statistics</h4>
+                <div class="chart-container"><canvas id="numericDistributionsChart"></canvas></div>
             </div>""")
 
         if not charts_html:
@@ -219,6 +311,40 @@ class HTMLReportGenerator:
     def _get_chart_scripts(self, chart_data: dict) -> str:
         import json
         scripts = []
+
+        if chart_data.get("type_distribution"):
+            labels = json.dumps(list(chart_data["type_distribution"].keys()))
+            values = json.dumps(list(chart_data["type_distribution"].values()))
+            scripts.append(f"""
+            new Chart(document.getElementById('typeDistributionChart'), {{
+                type: 'doughnut',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        data: {values},
+                        backgroundColor: ['rgba(59, 130, 246, 0.8)', 'rgba(16, 185, 129, 0.8)', 'rgba(245, 158, 11, 0.8)', 'rgba(139, 92, 246, 0.8)', 'rgba(236, 72, 153, 0.8)'],
+                        borderWidth: 2,
+                        borderColor: '#fff'
+                    }}]
+                }},
+                options: {{ 
+                    responsive: true, 
+                    maintainAspectRatio: false,
+                    plugins: {{ 
+                        legend: {{ 
+                            position: 'right',
+                            labels: {{ font: {{ size: 13 }}, padding: 15 }}
+                        }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    return context.label + ': ' + context.parsed + ' columns';
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }});""")
 
         if chart_data.get("missing_values"):
             labels = json.dumps(list(chart_data["missing_values"].keys()))
@@ -241,7 +367,13 @@ class HTMLReportGenerator:
                     maintainAspectRatio: false,
                     plugins: {{ 
                         legend: {{ display: false }},
-                        title: {{ display: false }}
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    return 'Missing: ' + context.parsed.y.toFixed(1) + '%';
+                                }}
+                            }}
+                        }}
                     }},
                     scales: {{ 
                         y: {{ 
@@ -250,24 +382,67 @@ class HTMLReportGenerator:
                             title: {{ display: true, text: 'Missing (%)' }} 
                         }},
                         x: {{
-                            ticks: {{ font: {{ size: 12 }} }}
+                            ticks: {{ font: {{ size: 11 }} }}
                         }}
                     }}
                 }}
             }});""")
 
-        if chart_data.get("type_distribution"):
-            labels = json.dumps(list(chart_data["type_distribution"].keys()))
-            values = json.dumps(list(chart_data["type_distribution"].values()))
+        if chart_data.get("completeness_by_column"):
+            labels = json.dumps(list(chart_data["completeness_by_column"].keys()))
+            values = json.dumps(list(chart_data["completeness_by_column"].values()))
             scripts.append(f"""
-            new Chart(document.getElementById('typeDistributionChart'), {{
+            new Chart(document.getElementById('completenessChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        label: 'Completeness %',
+                        data: {values},
+                        backgroundColor: 'rgba(16, 185, 129, 0.7)',
+                        borderColor: 'rgba(16, 185, 129, 1)',
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{ 
+                        legend: {{ display: false }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    return 'Complete: ' + context.parsed.y.toFixed(1) + '%';
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{ 
+                        y: {{ 
+                            beginAtZero: true, 
+                            max: 100, 
+                            title: {{ display: true, text: 'Completeness (%)' }} 
+                        }},
+                        x: {{
+                            ticks: {{ font: {{ size: 11 }} }}
+                        }}
+                    }}
+                }}
+            }});""")
+
+        if chart_data.get("cardinality_distribution"):
+            labels = json.dumps(list(chart_data["cardinality_distribution"].keys()))
+            values = json.dumps(list(chart_data["cardinality_distribution"].values()))
+            scripts.append(f"""
+            new Chart(document.getElementById('cardinalityChart'), {{
                 type: 'doughnut',
                 data: {{
                     labels: {labels},
                     datasets: [{{
                         data: {values},
-                        backgroundColor: ['rgba(59, 130, 246, 0.7)', 'rgba(16, 185, 129, 0.7)', 'rgba(245, 158, 11, 0.7)', 'rgba(139, 92, 246, 0.7)', 'rgba(236, 72, 153, 0.7)'],
-                        borderWidth: 2
+                        backgroundColor: ['rgba(239, 68, 68, 0.8)', 'rgba(245, 158, 11, 0.8)', 'rgba(16, 185, 129, 0.8)'],
+                        borderWidth: 2,
+                        borderColor: '#fff'
                     }}]
                 }},
                 options: {{ 
@@ -276,11 +451,246 @@ class HTMLReportGenerator:
                     plugins: {{ 
                         legend: {{ 
                             position: 'right',
-                            labels: {{ font: {{ size: 14 }}, padding: 20 }}
+                            labels: {{ font: {{ size: 13 }}, padding: 15 }}
+                        }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    return context.label + ' Cardinality: ' + context.parsed + ' columns';
+                                }}
+                            }}
                         }}
                     }}
                 }}
             }});""")
+
+        if chart_data.get("outlier_ratios"):
+            labels = json.dumps(list(chart_data["outlier_ratios"].keys()))
+            values = json.dumps(list(chart_data["outlier_ratios"].values()))
+            scripts.append(f"""
+            new Chart(document.getElementById('outlierRatiosChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        label: 'Outlier %',
+                        data: {values},
+                        backgroundColor: ['rgba(245, 158, 11, 0.7)', 'rgba(139, 92, 246, 0.7)'],
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {{ 
+                        legend: {{ display: false }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    return context.parsed.x.toFixed(1) + '% outliers';
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{ 
+                        x: {{ 
+                            beginAtZero: true, 
+                            max: 100, 
+                            title: {{ display: true, text: 'Percentage (%)' }} 
+                        }},
+                        y: {{
+                            ticks: {{ font: {{ size: 13 }} }}
+                        }}
+                    }}
+                }}
+            }});""")
+
+        if chart_data.get("quality_metrics"):
+            labels = json.dumps(list(chart_data["quality_metrics"].keys()))
+            values = json.dumps(list(chart_data["quality_metrics"].values()))
+            colors = json.dumps(['rgba(239, 68, 68, 0.7)' if any(x in l for x in ['Duplicate', 'Noise', 'Anomal', 'Issues']) else 'rgba(16, 185, 129, 0.7)' for l in chart_data["quality_metrics"].keys()])
+            scripts.append(f"""
+            new Chart(document.getElementById('qualityMetricsChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        label: 'Value (%)',
+                        data: {values},
+                        backgroundColor: {colors},
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{ 
+                        legend: {{ display: false }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    return context.parsed.y.toFixed(1) + '%';
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{ 
+                        y: {{ beginAtZero: true, max: 100 }},
+                        x: {{
+                            ticks: {{ font: {{ size: 11 }} }}
+                        }}
+                    }}
+                }}
+            }});""")
+
+        if chart_data.get("dimension_scores"):
+            labels = json.dumps(list(chart_data["dimension_scores"].keys()))
+            values = json.dumps(list(chart_data["dimension_scores"].values()))
+            scripts.append(f"""
+            new Chart(document.getElementById('dimensionScoresChart'), {{
+                type: 'radar',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        label: 'Score %',
+                        data: {values},
+                        fill: true,
+                        backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                        borderColor: 'rgba(59, 130, 246, 1)',
+                        pointBackgroundColor: 'rgba(59, 130, 246, 1)',
+                        pointBorderColor: '#fff',
+                        pointHoverBackgroundColor: '#fff',
+                        pointHoverBorderColor: 'rgba(59, 130, 246, 1)',
+                        borderWidth: 2
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{
+                        legend: {{ display: false }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    return context.parsed.r.toFixed(1) + '%';
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{
+                        r: {{
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {{
+                                stepSize: 20,
+                                font: {{ size: 11 }}
+                            }},
+                            pointLabels: {{
+                                font: {{ size: 12 }}
+                            }}
+                        }}
+                    }}
+                }}
+            }});""")
+
+        if chart_data.get("quality_issues"):
+            labels = json.dumps(list(chart_data["quality_issues"].keys()))
+            values = json.dumps(list(chart_data["quality_issues"].values()))
+            scripts.append(f"""
+            new Chart(document.getElementById('qualityIssuesChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{
+                        label: 'Issue Count',
+                        data: {values},
+                        backgroundColor: ['rgba(239, 68, 68, 0.7)', 'rgba(245, 158, 11, 0.7)', 'rgba(234, 179, 8, 0.7)'],
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {{ 
+                        legend: {{ display: false }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    return context.parsed.x + ' issues';
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{ 
+                        x: {{ 
+                            beginAtZero: true,
+                            title: {{ display: true, text: 'Number of Issues' }},
+                            ticks: {{ stepSize: 1 }}
+                        }},
+                        y: {{
+                            ticks: {{ font: {{ size: 13 }} }}
+                        }}
+                    }}
+                }}
+            }});""")
+
+        if chart_data.get("numeric_distributions"):
+            columns = list(chart_data["numeric_distributions"].keys())
+            datasets = []
+
+            means = [chart_data["numeric_distributions"][col].get("mean", 0) for col in columns]
+            stds = [chart_data["numeric_distributions"][col].get("std", 0) for col in columns]
+
+            datasets_json = json.dumps([
+                {
+                    "label": "Mean",
+                    "data": means,
+                    "backgroundColor": "rgba(59, 130, 246, 0.7)",
+                    "borderWidth": 1
+                },
+                {
+                    "label": "Std Dev",
+                    "data": stds,
+                    "backgroundColor": "rgba(139, 92, 246, 0.7)",
+                    "borderWidth": 1
+                }
+            ])
+            labels_json = json.dumps(columns)
+
+            scripts.append(f"""
+            new Chart(document.getElementById('numericDistributionsChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: {labels_json},
+                    datasets: {datasets_json}
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{ 
+                        legend: {{ 
+                            display: true,
+                            position: 'top'
+                        }},
+                        tooltip: {{
+                            mode: 'index',
+                            intersect: false
+                        }}
+                    }},
+                    scales: {{ 
+                        y: {{ 
+                            beginAtZero: true,
+                            title: {{ display: true, text: 'Value' }}
+                        }},
+                        x: {{
+                            ticks: {{ font: {{ size: 11 }} }}
+                        }}
+                    }}
+                }}
+            }});""")
+
 
         if chart_data.get("outlier_ratios"):
             labels = json.dumps(list(chart_data["outlier_ratios"].keys()))
@@ -948,48 +1358,91 @@ class HTMLReportGenerator:
         }
 
         .charts-grid {
-            display: flex;
-            flex-direction: column;
-            gap: 2rem;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 1.5rem;
             margin-top: 1.5rem;
+        }
+
+        @media (max-width: 1400px) {
+            .charts-grid {
+                grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            }
+        }
+
+        @media (max-width: 900px) {
+            .charts-grid {
+                grid-template-columns: 1fr;
+            }
         }
 
         .chart-card {
             background: white;
             border-radius: 12px;
-            padding: 2rem;
+            padding: 1.5rem;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
             border: 1px solid #e2e8f0;
+            min-height: 350px;
         }
 
         .chart-card h4 {
-            font-size: 1.2rem;
+            font-size: 1.1rem;
             color: var(--primary);
-            margin-bottom: 1.5rem;
+            margin-bottom: 1rem;
             font-weight: 600;
             text-align: center;
         }
 
         .chart-card canvas {
             width: 100% !important;
-            height: 350px !important;
+            max-height: 300px !important;
         }
 
         .chart-container {
             position: relative;
-            height: 350px;
+            height: 280px;
             width: 100%;
         }
 
+        .chart-card.doughnut-chart {
+            min-height: 350px;
+        }
+
         .chart-card.doughnut-chart .chart-container {
-            max-width: 600px;
-            margin: 0 auto;
+            height: 280px;
         }
 
         .chart-card.doughnut-chart canvas {
-            max-width: 500px;
-            margin: 0 auto;
-            display: block;
+            max-height: 280px !important;
+        }
+
+        .chart-card.radar-chart {
+            min-height: 400px;
+        }
+
+        .chart-card.radar-chart .chart-container {
+            height: 320px;
+        }
+
+        .chart-card.radar-chart canvas {
+            max-height: 320px !important;
+        }
+
+        .chart-card.wide-chart {
+            grid-column: 1 / -1;
+            min-height: 400px;
+        }
+
+        .chart-card.wide-chart .chart-container {
+            height: 350px;
+        }
+
+        .chart-card.wide-chart canvas {
+            max-height: 350px !important;
+        }
+
+        .component-section {
+            background-color: white;
             padding: 1.5rem 2rem;
             border-radius: 12px;
             margin-bottom: 2rem;

@@ -37,6 +37,16 @@ config = AnalysisConfig(
 analyzer = AEDAAnalyzer("your_dataset.parquet", config=config)
 analyzer.analyze().generate_report()
 
+# Exclude specific components
+from aeda.components import LabelNoise, DistributionModeling
+
+config = AnalysisConfig(
+    target_column="Survived",
+    exclude_components=[LabelNoise, DistributionModeling]
+)
+analyzer = AEDAAnalyzer("titanic.csv", config=config)
+analyzer.analyze().generate_report()
+
 # Access results programmatically
 results = analyzer.get_results()
 outlier_summary = analyzer.get_summary("OutlierDetectionComponent")
@@ -46,6 +56,7 @@ outlier_summary = analyzer.get_summary("OutlierDetectionComponent")
 
 ```python
 from aeda import AnalysisConfig
+from aeda.components import LabelNoise, NearDuplicates
 
 config = AnalysisConfig(
     # Component toggles
@@ -60,6 +71,9 @@ config = AnalysisConfig(
     distribution_modeling=True,
     composite_quality=True,
     dataset_summary=True,
+    
+    # Exclude specific components (alternative to setting to False)
+    exclude_components=[LabelNoise, NearDuplicates],
     
     # ML settings
     target_column="Survived",  # Required for label noise detection
@@ -89,6 +103,8 @@ analyzer.analyze().generate_report()
 
 ## Components
 
+AEDA includes the following analysis components:
+
 - **Dataset Overview**: Basic statistics and structure
 - **Missing Values**: Missing data analysis
 - **Exact Duplicates**: Duplicate row detection
@@ -100,6 +116,38 @@ analyzer.analyze().generate_report()
 - **Distribution Modeling**: Autoencoder-based anomaly detection
 - **Composite Quality Score**: Overall data readiness assessment
 - **Dataset Summary**: LLM-powered analysis summary
+
+### Available Component Classes for Exclusion
+
+When using the `exclude_components` parameter, you can import these component classes:
+
+```python
+from aeda.components import (
+    DatasetOverview,      # or DatasetOverviewComponent
+    MissingValues,        # or MissingValuesReport
+    ExactDuplicates,      # or ExactDuplicateDetectionComponent
+    NearDuplicates,       # or NearDuplicateDetectionComponent
+    OutlierDetection,     # or OutlierDetectionComponent
+    CategoricalOutliers,  # or CategoricalOutlierDetectionComponent
+    LabelNoise,           # or LabelNoiseDetectionComponent
+    RelationalConsistency,  # or RelationalConsistencyComponent
+    DistributionModeling,   # or DistributionModelingComponent
+    CompositeQuality,       # or CompositeQualityScoreComponent
+    DatasetSummary,         # or LLMDatasetSummaryComponent
+)
+```
+
+Example:
+```python
+from aeda import AEDAAnalyzer, AnalysisConfig
+from aeda.components import LabelNoise, DistributionModeling, NearDuplicates
+
+config = AnalysisConfig(
+    exclude_components=[LabelNoise, DistributionModeling, NearDuplicates]
+)
+analyzer = AEDAAnalyzer("data.csv", config=config)
+analyzer.analyze().generate_report()
+```
 
 ## License
 
