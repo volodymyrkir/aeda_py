@@ -644,7 +644,8 @@ class LabelNoiseDetectionComponent(ReportComponent):
                 component_summary = self.llm.generate_component_summary(
                     component_name="Label Noise Detection",
                     metrics={"noise_ratio": summary_data["noise_ratio"], "noise_type": summary_data["noise_type"]},
-                    findings=f"Found {summary_data['suspicious_sample_count']} suspicious labels ({summary_data['noise_ratio']:.1%} of data)"
+                    findings=f"Found {summary_data['suspicious_sample_count']} suspicious labels ({summary_data['noise_ratio']:.1%} of data)",
+                    total_rows=len(self.context.dataset.df),
                 )
                 lines.append(f"{'='*80}")
                 lines.append("📋 COMPONENT SUMMARY")

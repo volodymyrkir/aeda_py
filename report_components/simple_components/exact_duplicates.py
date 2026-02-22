@@ -121,7 +121,8 @@ class ExactDuplicateDetectionComponent(ReportComponent):
                 component_summary = self.llm.generate_component_summary(
                     component_name="Exact Duplicate Detection",
                     metrics={"duplicate_ratio": summary_data["duplicate_ratio"], "duplicate_groups": summary_data["duplicate_groups"]},
-                    findings=findings
+                    findings=findings,
+                    total_rows=len(self.context.dataset.df),
                 )
                 lines.append(f"\n{'='*80}")
                 lines.append("📋 COMPONENT SUMMARY")

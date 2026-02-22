@@ -784,6 +784,10 @@ class HTMLReportGenerator:
         component_summary_html = ""
         is_dataset_summary = component.__class__.__name__ == "LLMDatasetSummaryComponent"
 
+        inline_chart_html = ""
+        if component.__class__.__name__ == "OutlierDetectionComponent":
+            inline_chart_html = self._build_outlier_feature_chart(component, section_id)
+
         if hasattr(component, 'get_full_summary'):
             full_summary = component.get_full_summary()
             if full_summary and full_summary.strip():
@@ -829,8 +833,70 @@ class HTMLReportGenerator:
             </div>
 
             {llm_explanations_html}
+            {inline_chart_html}
             {component_summary_html}
         </section>"""
+
+    def _build_outlier_feature_chart(self, component, section_id: str) -> str:
+        import json as _json
+        try:
+            chart_data = getattr(component, 'result', {}).get('chart_data', {})
+            if not chart_data:
+                return ""
+            labels = list(chart_data.keys())
+            inlier_means = [chart_data[c]['inlier_mean'] for c in labels]
+            outlier_means = [chart_data[c]['outlier_mean'] for c in labels]
+            chart_id = f"outlierFeatureChart_{section_id}"
+            labels_json = _json.dumps(labels)
+            inlier_json = _json.dumps(inlier_means)
+            outlier_json = _json.dumps(outlier_means)
+            return f"""
+        <div class="inline-chart-box">
+            <h4>📊 Top Outlier Features: Inlier vs Outlier Mean</h4>
+            <div class="inline-chart-container">
+                <canvas id="{chart_id}"></canvas>
+            </div>
+            <script>
+            (function() {{
+                new Chart(document.getElementById('{chart_id}'), {{
+                    type: 'bar',
+                    data: {{
+                        labels: {labels_json},
+                        datasets: [
+                            {{
+                                label: 'Inlier Mean',
+                                data: {inlier_json},
+                                backgroundColor: 'rgba(16, 185, 129, 0.7)',
+                                borderColor: 'rgba(16, 185, 129, 1)',
+                                borderWidth: 1
+                            }},
+                            {{
+                                label: 'Outlier Mean',
+                                data: {outlier_json},
+                                backgroundColor: 'rgba(239, 68, 68, 0.7)',
+                                borderColor: 'rgba(239, 68, 68, 1)',
+                                borderWidth: 1
+                            }}
+                        ]
+                    }},
+                    options: {{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {{
+                            legend: {{ display: true, position: 'top' }},
+                            tooltip: {{ mode: 'index', intersect: false }}
+                        }},
+                        scales: {{
+                            y: {{ title: {{ display: true, text: 'Mean Value' }} }},
+                            x: {{ ticks: {{ font: {{ size: 12 }} }} }}
+                        }}
+                    }}
+                }});
+            }})();
+            </script>
+        </div>"""
+        except Exception:
+            return ""
 
     def _parse_full_summary(self, full_summary: str, is_dataset_summary: bool = False) -> tuple:
         """Parse full summary into semantic explanations and component summary sections."""
@@ -1907,6 +1973,67 @@ class HTMLReportGenerator:
             .download-btn {
                 display: none;
             }
+        }
+
+        /* Inline per-component chart */
+        .inline-chart-box {
+            margin-top: 1.5rem;
+            padding: 1.25rem;
+            background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+            border-radius: 10px;
+            border: 1px solid #0ea5e9;
+        }
+
+        .inline-chart-box h4 {
+            font-size: 1rem;
+            color: #0369a1;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+
+        .inline-chart-container {
+            position: relative;
+            height: 280px;
+            width: 100%;
+        }
+
+        /* Near-duplicate pair horizontal comparison */
+        .nd-pair-card {
+            max-width: 100% !important;
+            grid-column: 1 / -1;
+        }
+
+        .nd-row-comparison {
+            display: flex;
+            gap: 0;
+            align-items: flex-start;
+            margin: 0.75rem 0;
+        }
+
+        .nd-row-col {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .nd-row-label {
+            font-weight: 700;
+            color: #4338ca;
+            font-size: 0.85rem;
+            margin-bottom: 0.35rem;
+            padding: 0.2rem 0.4rem;
+            background: #eef2ff;
+            border-radius: 4px;
+            display: inline-block;
+        }
+
+        .nd-row-divider {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.4rem;
+            color: #94a3b8;
+            padding: 0 0.75rem;
+            margin-top: 1.5rem;
         }
 
         /* Label noise cards */

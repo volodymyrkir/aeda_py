@@ -144,7 +144,8 @@ class DatasetOverviewComponent(ReportComponent):
                 component_summary = self.llm.generate_component_summary(
                     component_name="Dataset Overview",
                     metrics={"rows": summary_data['dataset_shape']['rows'], "columns": summary_data['dataset_shape']['columns']},
-                    findings=findings
+                    findings=findings,
+                    total_rows=summary_data['dataset_shape']['rows'],
                 )
                 lines.append(f"\n{'='*80}")
                 lines.append("📋 COMPONENT SUMMARY")

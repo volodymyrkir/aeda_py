@@ -730,7 +730,8 @@ class CompositeQualityScoreComponent(ReportComponent):
                         "readiness_score": summary_data["data_readiness_score"],
                         "issues": summary_data["n_quality_issues"]
                     },
-                    findings=f"Data readiness score: {summary_data['data_readiness_score']:.2f} with {summary_data['n_quality_issues']} quality issues"
+                    findings=f"Data readiness score: {summary_data['data_readiness_score']:.2f} with {summary_data['n_quality_issues']} quality issues",
+                    total_rows=len(self.context.dataset.df),
                 )
                 lines.append(f"{'='*80}")
                 lines.append("📋 COMPONENT SUMMARY")

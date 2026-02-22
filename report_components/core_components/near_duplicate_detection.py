@@ -725,12 +725,13 @@ class NearDuplicateDetectionComponent(ReportComponent):
                 table_b = format_row(row_b, differing)
                 escaped_explanation = html.escape(str(expl['explanation']))
 
-                card = f"""<div class='ln-card' style='max-width:400px;'>
+                card = f"""<div class='ln-card nd-pair-card'>
                     <div class='ln-title'>Pair: Row {idx_a} ↔ Row {idx_b}</div>
                     <div class='ln-meta'>Similarity: {similarity:.1%} · Matching: {len(matching)} cols · Differing: {len(differing)} cols</div>
-                    <div style='display:flex;gap:10px;'>
-                        <div style='flex:1;'><strong>Row {idx_a}</strong><table class='ln-table'>{table_a}</table></div>
-                        <div style='flex:1;'><strong>Row {idx_b}</strong><table class='ln-table'>{table_b}</table></div>
+                    <div class='nd-row-comparison'>
+                        <div class='nd-row-col'><div class='nd-row-label'>Row {idx_a}</div><table class='ln-table'>{table_a}</table></div>
+                        <div class='nd-row-divider'>↔</div>
+                        <div class='nd-row-col'><div class='nd-row-label'>Row {idx_b}</div><table class='ln-table'>{table_b}</table></div>
                     </div>
                     <div class='ln-exp'>{escaped_explanation}</div>
                 </div>"""
@@ -751,7 +752,8 @@ class NearDuplicateDetectionComponent(ReportComponent):
                         "near_duplicate_ratio": summary_data["near_duplicate_ratio"],
                         "pairs": summary_data["total_pairs"]
                     },
-                    findings=f"Found {summary_data['total_pairs']} near-duplicate pairs ({summary_data['near_duplicate_ratio']:.1%} affected rows)"
+                    findings=f"Found {summary_data['total_pairs']} near-duplicate pairs ({summary_data['near_duplicate_ratio']:.1%} affected rows)",
+                    total_rows=len(self.context.dataset.df),
                 )
                 lines.append(f"{'='*80}")
                 lines.append("📋 COMPONENT SUMMARY")

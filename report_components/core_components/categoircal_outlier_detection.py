@@ -53,6 +53,7 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
         skipped_cols = []
         high_null_cols = []
         llm_count = 0
+        seen_row_indices = set()
 
         for col in cat_cols:
             non_null = df[col].dropna()
@@ -98,9 +99,13 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
             }).sort_values("frequency").head(self.max_explanations_per_col)
 
             for _, row in rare_df.iterrows():
+                row_idx = int(row["index"])
+                if row_idx in seen_row_indices:
+                    continue
+                seen_row_indices.add(row_idx)
                 narrative = self._generate_narrative(row["frequency"], col, row["value"])
                 explanation_entry = {
-                    "row_index": int(row["index"]),
+                    "row_index": row_idx,
                     "column": col,
                     "value": row["value"],
                     "frequency": row["frequency"],
@@ -213,7 +218,7 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
                 component_summary = self.llm.generate_component_summary(
                     component_name="Categorical Outlier Detection",
                     metrics={"outlier_ratio": summary_data["outlier_ratio"], "num_outliers": len(self.result["outliers"])},
-                    findings=f"Found {len(self.result['outliers'])} rare categorical values ({summary_data['outlier_ratio']:.1%} of data)"
+                    findings=f"Found {len(self.result['outliers'])} rare categorical values ({summary_data['outlier_ratio']:.1%} of data)",
                 )
                 lines.append(f"{'='*80}")
                 lines.append("📋 COMPONENT SUMMARY")
