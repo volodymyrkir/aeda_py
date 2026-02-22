@@ -752,7 +752,8 @@ class NearDuplicateDetectionComponent(ReportComponent):
                         "near_duplicate_ratio": summary_data["near_duplicate_ratio"],
                         "pairs": summary_data["total_pairs"]
                     },
-                    findings=f"Found {summary_data['total_pairs']} near-duplicate pairs ({summary_data['near_duplicate_ratio']:.1%} affected rows)"
+                    findings=f"Found {summary_data['total_pairs']} near-duplicate pairs ({summary_data['near_duplicate_ratio']:.1%} affected rows)",
+                    total_rows=len(self.context.dataset.df),
                 )
                 lines.append(f"{'='*80}")
                 lines.append("📋 COMPONENT SUMMARY")

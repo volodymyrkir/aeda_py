@@ -53,7 +53,8 @@ class MissingValuesReport(ReportComponent):
                 component_summary = self.llm.generate_component_summary(
                     component_name="Missing Values Analysis",
                     metrics={"num_columns_with_missing": summary_data["num_columns_with_missing"]},
-                    findings=findings
+                    findings=findings,
+                    total_rows=len(self.context.dataset.df),
                 )
                 lines.append(f"\n{'='*80}")
                 lines.append("📋 COMPONENT SUMMARY")

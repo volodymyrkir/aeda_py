@@ -3,9 +3,11 @@ pyarrow
 pandas-stubs
 scikit-learn
 shap
-torch
-transformers
-accelerate
 polars
 pyinstaller
 openpyxl
+huggingface-hub
+llama-cpp-python
+torch
+transformers
+accelerate

@@ -373,7 +373,8 @@ class DistributionModelingComponent(ReportComponent):
                 component_summary = self.llm.generate_component_summary(
                     component_name="Distribution Modeling",
                     metrics={"high_error_ratio": summary_data["high_error_ratio"]},
-                    findings=f"Found {summary_data['high_error_ratio']:.1%} of data with high reconstruction error"
+                    findings=f"Found {summary_data['high_error_ratio']:.1%} of data with high reconstruction error",
+                    total_rows=len(self.context.dataset.df),
                 )
                 lines.append(f"{'='*80}")
                 lines.append("📋 COMPONENT SUMMARY")

@@ -1,11 +1,15 @@
 import json
 import logging
+import os
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
 
-from utils.consts import DEFAULT_LLM_MODEL, DEFAULT_LLM_MAX_TOKENS, DEFAULT_LLM_TEMPERATURE, DEFAULT_LLM_TIMEOUT
+from utils.consts import (
+    DEFAULT_LLM_MODEL, DEFAULT_LLM_MAX_TOKENS, DEFAULT_LLM_TEMPERATURE, DEFAULT_LLM_TIMEOUT,
+    DEFAULT_GGUF_REPO, DEFAULT_GGUF_FILENAME, DEFAULT_GGUF_CONTEXT_LENGTH, DEFAULT_GGUF_N_THREADS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +17,7 @@ _llm_service_instance: Optional["LLMService"] = None
 
 
 class LLMProvider(Enum):
+    LOCAL_GGUF = "local_gguf"
     LOCAL_HF = "local_hf"
     NONE = "none"
 
@@ -24,6 +29,10 @@ class LLMConfig:
     max_tokens: int = DEFAULT_LLM_MAX_TOKENS
     temperature: float = DEFAULT_LLM_TEMPERATURE
     timeout: int = DEFAULT_LLM_TIMEOUT
+    gguf_repo: str = DEFAULT_GGUF_REPO
+    gguf_filename: str = DEFAULT_GGUF_FILENAME
+    gguf_context_length: int = DEFAULT_GGUF_CONTEXT_LENGTH
+    gguf_n_threads: int = DEFAULT_GGUF_N_THREADS
 
 
 class BaseLLMProvider(ABC):
@@ -38,22 +47,80 @@ class BaseLLMProvider(ABC):
     def is_available(self) -> bool:
         pass
 
-    def _format_data_analysis_prompt(
-        self,
-        component_name: str,
-        context_data: Dict[str, Any],
-        question: str,
-    ) -> str:
-        return f"""You are a data quality analyst assistant. Analyze the following information and provide a clear, concise explanation.
-Component: {component_name}
-Context Data:
-{json.dumps(context_data, indent=2, default=str)}
-Question: {question}
-Provide a concise but complete explanation (aim for 2-4 sentences). Focus on:
 
-What the issue is
-Why it might have occurred
-Potential impact on data quality or ML models"""
+class LocalGGUFProvider(BaseLLMProvider):
+    def __init__(self, config: LLMConfig):
+        super().__init__(config)
+        self._llm = None
+
+    def is_available(self) -> bool:
+        try:
+            from llama_cpp import Llama
+            return True
+        except ImportError:
+            return False
+
+    def _load_model(self):
+        if self._llm is not None:
+            return
+
+        from llama_cpp import Llama
+        from huggingface_hub import hf_hub_download
+
+        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "aeda", "gguf")
+        os.makedirs(cache_dir, exist_ok=True)
+
+        model_path = os.path.join(cache_dir, self.config.gguf_filename)
+        if not os.path.exists(model_path):
+            print(f"\n{'=' * 60}")
+            print("DOWNLOADING GGUF MODEL")
+            print(f"{'=' * 60}")
+            print(f"   Repo:  {self.config.gguf_repo}")
+            print(f"   File:  {self.config.gguf_filename}")
+            print(f"   Cache: {cache_dir}")
+            print("   This is a one-time download...")
+            model_path = hf_hub_download(
+                repo_id=self.config.gguf_repo,
+                filename=self.config.gguf_filename,
+                local_dir=cache_dir,
+            )
+            print("   ✅ Download complete!")
+            print(f"{'=' * 60}\n")
+        else:
+            print(f"\n{'=' * 60}")
+            print("🔧 LOADING GGUF MODEL")
+            print(f"{'=' * 60}")
+            print(f"   Model: {self.config.gguf_filename}")
+            print(f"   Path:  {model_path}")
+
+        import multiprocessing
+        n_threads = self.config.gguf_n_threads or multiprocessing.cpu_count()
+
+        self._llm = Llama(
+            model_path=model_path,
+            n_ctx=self.config.gguf_context_length,
+            n_threads=n_threads,
+            n_gpu_layers=0,
+            verbose=False,
+        )
+        print("   ✅ Model loaded successfully! (GGUF / llama-cpp-python)")
+        print(f"{'=' * 60}\n")
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: Optional[int] = None) -> str:
+        self._load_model()
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        response = self._llm.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens or self.config.max_tokens,
+            temperature=self.config.temperature,
+            stop=["</s>", "<|im_end|>", "<|end|>"],
+        )
+        return response["choices"][0]["message"]["content"].strip()
 
 
 class LocalHuggingFaceProvider(BaseLLMProvider):
@@ -85,6 +152,13 @@ class LocalHuggingFaceProvider(BaseLLMProvider):
             device = "cpu"
             torch_dtype = torch.float32
 
+        print(f"\n{'=' * 60}")
+        print("🔧 LOADING LLM MODEL (HuggingFace)")
+        print(f"{'=' * 60}")
+        print(f"   Model:  {model_name}")
+        print(f"   Device: {device.upper()}")
+        print("   Status: Loading model... (this may take a minute)")
+
         self._pipeline = pipeline(
             "text-generation",
             model=model_name,
@@ -95,6 +169,9 @@ class LocalHuggingFaceProvider(BaseLLMProvider):
 
         if device == "cpu":
             self._pipeline.model = self._pipeline.model.to("cpu")
+
+        print("   Status: ✅ Model loaded successfully!")
+        print(f"{'=' * 60}\n")
 
     def is_available(self) -> bool:
         try:
@@ -126,6 +203,21 @@ class LocalHuggingFaceProvider(BaseLLMProvider):
         return response
 
 
+def _detect_best_provider() -> LLMProvider:
+    try:
+        from llama_cpp import Llama
+        return LLMProvider.LOCAL_GGUF
+    except ImportError:
+        pass
+    try:
+        import torch
+        from transformers import pipeline
+        return LLMProvider.LOCAL_HF
+    except ImportError:
+        pass
+    return LLMProvider.NONE
+
+
 class LLMService:
     SYSTEM_PROMPT = "You are a data quality specialist. Answer in exactly 2 sentences, max 25 words total. State only the cause. No lists. No code. No examples."
 
@@ -138,18 +230,25 @@ class LLMService:
         global _llm_service_instance
 
         if _llm_service_instance is None:
+            best = _detect_best_provider()
+
             config = LLMConfig(
-                provider=LLMProvider.LOCAL_HF,
+                provider=best,
                 model_name=model_name,
-                **kwargs,
             )
 
-            llm_provider = LocalHuggingFaceProvider(config)
+            if best == LLMProvider.LOCAL_GGUF:
+                provider = LocalGGUFProvider(config)
+            elif best == LLMProvider.LOCAL_HF:
+                provider = LocalHuggingFaceProvider(config)
+            else:
+                raise ImportError(
+                    "No LLM backend found. Install llama-cpp-python (recommended) or transformers+torch.\n"
+                    "  Fast (recommended): pip install llama-cpp-python\n"
+                    "  Fallback:           pip install transformers torch accelerate"
+                )
 
-            if not llm_provider.is_available():
-                raise ImportError("Failed to load the module")
-
-            _llm_service_instance = cls(llm_provider)
+            _llm_service_instance = cls(provider)
 
         return _llm_service_instance
 
@@ -307,14 +406,16 @@ class LLMService:
             component_name: str,
             metrics: Dict[str, Any],
             findings: str,
+            total_rows: Optional[int] = None,
     ) -> str:
-        prompt = f"""Component: {component_name}
+        row_line = f"Dataset size: {total_rows} rows.\n" if total_rows else ""
+        prompt = f"""{row_line}Component: {component_name}
 Metrics: {json.dumps(metrics, default=str)}
 Findings: {findings}
-In 2-3 sentences: Summarize ONLY what this component found. Do NOT make claims about ML readiness based on dataset size alone. Focus on describing the actual findings.
+In 2-3 sentences: Summarize what this component found. Do not make your answers too short. Do NOT make claims about ML readiness based on dataset size alone, but briefly describe how it affects the quality of the data. Focus on describing the actual findings. Use only the numbers provided above.
 """
 
         return self.generate(
             prompt,
-            system_prompt="You are a data quality analyst. Describe only what the metrics show. Do not speculate about ML suitability based on row/column counts.",
+            system_prompt="You are a data quality analyst. Describe only what the metrics show. Do not speculate about ML suitability based on row/column counts. Never invent row counts or percentages not stated in the prompt.",
         )

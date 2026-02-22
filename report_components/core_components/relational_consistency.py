@@ -1059,7 +1059,8 @@ class RelationalConsistencyComponent(ReportComponent):
                         "consistency_score": summary_data["overall_consistency_score"],
                         "violations": summary_data["total_violations"]
                     },
-                    findings=f"Found {summary_data['total_violations']} consistency violations, score: {summary_data['overall_consistency_score']:.2f}"
+                    findings=f"Found {summary_data['total_violations']} consistency violations, score: {summary_data['overall_consistency_score']:.2f}",
+                    total_rows=len(self.context.dataset.df),
                 )
                 if component_summary:
                     lines.append(f"{'='*80}")

@@ -323,7 +323,8 @@ class OutlierDetectionComponent(ReportComponent):
                 component_summary = self.llm.generate_component_summary(
                     component_name="Outlier Detection",
                     metrics={"outlier_ratio": summary_data["outlier_ratio"], "num_outliers": len(self.result["outliers"])},
-                    findings=f"Found {len(self.result['outliers'])} outliers ({summary_data['outlier_ratio']:.1%} of data)"
+                    findings=f"Found {len(self.result['outliers'])} outliers ({summary_data['outlier_ratio']:.1%} of data)",
+                    total_rows=len(self.context.dataset.df),
                 )
                 lines.append(f"{'='*80}")
                 lines.append("📋 COMPONENT SUMMARY")
