@@ -193,11 +193,19 @@ class LLMService:
         dataset_context: Optional[str] = None,
     ) -> str:
         top_features = list(contributing_features.keys())[:3]
-        values = {k: row_data.get(k, "?") for k in top_features if k in row_data}
-        values_str = ", ".join([f"{k}={v}" for k, v in list(values.items())[:3]])
-        ctx = f" ({dataset_context})" if dataset_context else ""
-        prompt = f"Outlier{ctx}. Values: {values_str}. Score: {outlier_score:.2f}. Why is this unusual? 2 sentences, max 25 words."
-        return self.generate(prompt, max_tokens=150)
+        values_parts = []
+        for k in top_features:
+            if k in row_data:
+                val = row_data[k]
+                score = contributing_features[k]
+                values_parts.append(f"{k}={val} (deviation={score:.2f})")
+        values_str = ", ".join(values_parts) if values_parts else "unknown features"
+        prompt = (
+            f"Record has anomalous values: {values_str}. "
+            f"Outlier score: {outlier_score:.2f}. "
+            f"In exactly 2 sentences (max 20 words total): state which values are extreme and why they stand out."
+        )
+        return self.generate(prompt, max_tokens=80)
 
     def explain_near_duplicate(
         self,

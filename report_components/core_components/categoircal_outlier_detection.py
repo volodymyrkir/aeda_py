@@ -53,6 +53,7 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
         skipped_cols = []
         high_null_cols = []
         llm_count = 0
+        seen_row_indices = set()
 
         for col in cat_cols:
             non_null = df[col].dropna()
@@ -98,9 +99,13 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
             }).sort_values("frequency").head(self.max_explanations_per_col)
 
             for _, row in rare_df.iterrows():
+                row_idx = int(row["index"])
+                if row_idx in seen_row_indices:
+                    continue
+                seen_row_indices.add(row_idx)
                 narrative = self._generate_narrative(row["frequency"], col, row["value"])
                 explanation_entry = {
-                    "row_index": int(row["index"]),
+                    "row_index": row_idx,
                     "column": col,
                     "value": row["value"],
                     "frequency": row["frequency"],

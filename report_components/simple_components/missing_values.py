@@ -23,7 +23,7 @@ class MissingValuesReport(ReportComponent):
         return {
             "num_columns_with_missing": len(self.result["columns_with_missing"]),
             "worst_columns": sorted(
-                self.result["missing_ratio"].items(),
+                [(col, ratio) for col, ratio in self.result["missing_ratio"].items() if ratio > 0],
                 key=lambda x: x[1],
                 reverse=True
             )[:3]

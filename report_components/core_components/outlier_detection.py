@@ -43,6 +43,9 @@ class OutlierDetectionComponent(ReportComponent):
         self.cardinality_threshold = cardinality_threshold
         self.min_unique_for_id_heuristic = min_unique_for_id_heuristic
         self.llm_explanations = []
+        self._X_for_chart: pd.DataFrame = None
+        self._outlier_mask_for_chart: np.ndarray = None
+        self._numeric_cols_for_chart: list = None
 
     def analyze(self):
         df = self.context.dataset.df
@@ -114,6 +117,13 @@ class OutlierDetectionComponent(ReportComponent):
         explanations = self._explain_outliers(
             model, X_scaled, scores, outlier_mask, numeric_cols
         )
+
+        self._X_for_chart = X.copy()
+        self._outlier_mask_for_chart = outlier_mask.copy()
+        self._numeric_cols_for_chart = numeric_cols
+
+        chart_data = self._build_chart_data(X, outlier_mask, numeric_cols, explanations)
+
         self.result = {
             "summary": {
                 "outlier_ratio": round(float(outlier_mask.mean()), 5),
@@ -125,11 +135,43 @@ class OutlierDetectionComponent(ReportComponent):
                 "skipped_high_cardinality_columns": skipped_cols,
                 "used_numeric_columns": numeric_cols
             },
-            "outliers": explanations
+            "outliers": explanations,
+            "chart_data": chart_data
         }
         self.context.shared_artifacts["outlier_scores"] = scores
         self.context.shared_artifacts["outlier_mask"] = outlier_mask
         self.context.shared_artifacts["skipped_numeric_columns"] = skipped_cols  # For downstream use
+
+    def _build_chart_data(
+            self,
+            X: pd.DataFrame,
+            outlier_mask: np.ndarray,
+            numeric_cols: list,
+            explanations: List[Dict[str, Any]] = None
+    ) -> dict:
+        chart = {}
+        inlier_mask = ~outlier_mask
+        top_contributing = {}
+        for outlier_entry in (explanations or [])[:NUM_EXAMPLES_LLM]:
+            for feat, score in outlier_entry.get("top_contributing_features", {}).items():
+                top_contributing[feat] = top_contributing.get(feat, 0) + score
+
+        cols_to_chart = sorted(top_contributing, key=top_contributing.get, reverse=True)[:5]
+        if not cols_to_chart:
+            cols_to_chart = numeric_cols[:5]
+
+        for col in cols_to_chart:
+            if col not in X.columns:
+                continue
+            inlier_vals = X.loc[inlier_mask, col].dropna()
+            outlier_vals = X.loc[outlier_mask, col].dropna()
+            chart[col] = {
+                "inlier_mean": round(float(inlier_vals.mean()), 4) if len(inlier_vals) > 0 else 0,
+                "outlier_mean": round(float(outlier_vals.mean()), 4) if len(outlier_vals) > 0 else 0,
+                "inlier_std": round(float(inlier_vals.std()), 4) if len(inlier_vals) > 0 else 0,
+                "outlier_std": round(float(outlier_vals.std()), 4) if len(outlier_vals) > 0 else 0,
+            }
+        return chart
 
     def _explain_outliers(
             self,
