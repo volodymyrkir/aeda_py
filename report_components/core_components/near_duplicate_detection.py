@@ -1,7 +1,6 @@
-import hashlib
+import time
 from typing import Dict, List, Tuple, Optional, Any, Set
 from dataclasses import dataclass, field
-import warnings
 import html
 
 import numpy as np
@@ -12,7 +11,8 @@ from report_components.base_component import ReportComponent, AnalysisContext
 from utils.consts import (
     NUM_EXAMPLES_LLM, LOW_NEAR_DUPLICATE_RATIO, MEDIUM_NEAR_DUPLICATE_RATIO,
     NEAR_DUPLICATE_SIMILARITY_THRESHOLD, NEAR_DUPLICATE_NUM_PERM,
-    NEAR_DUPLICATE_NUM_BANDS, NEAR_DUPLICATE_NGRAM_SIZE, NEAR_DUPLICATE_MAX_PAIRS
+    NEAR_DUPLICATE_NUM_BANDS, NEAR_DUPLICATE_NGRAM_SIZE, NEAR_DUPLICATE_MAX_PAIRS,
+    NEAR_DUPLICATE_MAX_ROWS_FULL, NEAR_DUPLICATE_TIMEOUT_SECONDS
 )
 
 
@@ -61,7 +61,7 @@ class MinHasher:
         self._b = np.random.randint(0, self._mersenne_prime, size=num_perm, dtype=np.uint64)
 
     def _hash_token(self, token: str) -> int:
-        return int(hashlib.md5(token.encode('utf-8')).hexdigest()[:8], 16)
+        return hash(token) & self._max_hash
 
     def compute_signature(self, tokens: Set[str]) -> np.ndarray:
         if not tokens:
@@ -69,12 +69,9 @@ class MinHasher:
 
         token_hashes = np.array([self._hash_token(t) for t in tokens], dtype=np.uint64)
 
-        signature = np.full(self.num_perm, self._max_hash, dtype=np.uint64)
-
-        for token_hash in token_hashes:
-            permuted = (self._a * token_hash + self._b) % self._mersenne_prime
-            permuted = permuted & self._max_hash
-            signature = np.minimum(signature, permuted)
+        permuted = (self._a[np.newaxis, :] * token_hashes[:, np.newaxis] + self._b[np.newaxis, :]) % self._mersenne_prime
+        permuted = permuted & self._max_hash
+        signature = permuted.min(axis=0)
 
         return signature
 
@@ -177,15 +174,32 @@ class NearDuplicateDetectionComponent(ReportComponent):
             return
 
         try:
+            work_df = df
+            sample_indices = None
+            is_sampled = False
+
+            if len(df) > NEAR_DUPLICATE_MAX_ROWS_FULL:
+                sample_size = NEAR_DUPLICATE_MAX_ROWS_FULL
+                rng = np.random.RandomState(self.random_state)
+                sample_indices = rng.choice(len(df), size=sample_size, replace=False)
+                sample_indices.sort()
+                work_df = df.iloc[sample_indices].reset_index(drop=True)
+                is_sampled = True
+
             self._minhasher = MinHasher(num_perm=self.num_perm, seed=self.random_state)
             self._lsh_index = LSHIndex(num_perm=self.num_perm, num_bands=self.num_bands)
 
-            signatures = self._compute_signatures(df, use_columns)
+            signatures = self._compute_signatures(work_df, use_columns)
 
             for idx, sig in enumerate(signatures):
                 self._lsh_index.insert(idx, sig)
 
-            pairs = self._find_near_duplicate_pairs(df, signatures, use_columns)
+            pairs = self._find_near_duplicate_pairs(work_df, signatures, use_columns)
+
+            if is_sampled and sample_indices is not None:
+                for p in pairs:
+                    p.index_a = int(sample_indices[p.index_a])
+                    p.index_b = int(sample_indices[p.index_b])
 
             clusters = []
             if self.cluster_similar_records and pairs:
@@ -212,7 +226,9 @@ class NearDuplicateDetectionComponent(ReportComponent):
                     "total_rows": len(df),
                     "columns_used": use_columns,
                     "similarity_threshold": self.similarity_threshold,
-                    "total_pairs_found": len(pairs)
+                    "total_pairs_found": len(pairs),
+                    "sampled": is_sampled,
+                    "sample_size": len(work_df) if is_sampled else len(df)
                 }
             )
 
@@ -244,54 +260,32 @@ class NearDuplicateDetectionComponent(ReportComponent):
         df: pd.DataFrame,
         columns: List[str]
     ) -> List[np.ndarray]:
-        """Compute MinHash signatures for all rows."""
-        signatures = []
+        str_df = df[columns].fillna('__NULL__').astype(str).apply(lambda x: x.str.strip().str.lower())
+        col_indices = {col: i for i, col in enumerate(columns)}
 
+        signatures = []
         for idx in range(len(df)):
-            row = df.iloc[idx]
-            tokens = self._row_to_tokens(row, columns)
-            sig = self._minhasher.compute_signature(tokens)
-            signatures.append(sig)
+            tokens = set()
+            for col in columns:
+                ci = col_indices[col]
+                val = str_df.iat[idx, ci]
+                if val == '__null__':
+                    tokens.add(f"{col}:__NULL__")
+                    continue
+                if not val:
+                    tokens.add(f"{col}:__EMPTY__")
+                    continue
+                padded = f"__{val}__"
+                ng = self.ngram_size
+                for i in range(len(padded) - ng + 1):
+                    tokens.add(f"{col}:{padded[i:i + ng]}")
+                if len(val) > 10:
+                    for word in val.split():
+                        if len(word) > 2:
+                            tokens.add(f"{col}:word:{word}")
+            signatures.append(self._minhasher.compute_signature(tokens))
 
         return signatures
-
-    def _row_to_tokens(self, row: pd.Series, columns: List[str]) -> Set[str]:
-        """
-        Convert a row to a set of tokens for MinHash.
-
-        Uses character n-grams for text values and formatted strings for
-        numeric/categorical values.
-        """
-        tokens = set()
-
-        for col in columns:
-            value = row[col]
-
-            if pd.isna(value):
-                tokens.add(f"{col}:__NULL__")
-                continue
-
-            # Convert to string representation
-            str_value = str(value).strip().lower()
-
-            if not str_value:
-                tokens.add(f"{col}:__EMPTY__")
-                continue
-
-            # Generate character n-grams
-            padded = f"__{str_value}__"
-            for i in range(len(padded) - self.ngram_size + 1):
-                ngram = padded[i:i + self.ngram_size]
-                tokens.add(f"{col}:{ngram}")
-
-            # Also add word tokens for longer text
-            if len(str_value) > 10:
-                words = str_value.split()
-                for word in words:
-                    if len(word) > 2:
-                        tokens.add(f"{col}:word:{word}")
-
-        return tokens
 
     def _find_near_duplicate_pairs(
         self,
@@ -299,29 +293,32 @@ class NearDuplicateDetectionComponent(ReportComponent):
         signatures: List[np.ndarray],
         columns: List[str]
     ) -> List[NearDuplicatePair]:
-        """Find and verify near-duplicate pairs using LSH candidates."""
         pairs = []
         seen_pairs = set()
+        start_time = time.time()
+        pair_cap = self.max_pairs_to_report * 3
 
         for idx in range(len(df)):
+            if time.time() - start_time > NEAR_DUPLICATE_TIMEOUT_SECONDS:
+                break
+            if len(pairs) >= pair_cap:
+                break
+
             candidates = self._lsh_index.query_candidates(idx)
 
             for candidate_idx in candidates:
-                # Ensure consistent pair ordering to avoid duplicates
                 pair_key = (min(idx, candidate_idx), max(idx, candidate_idx))
                 if pair_key in seen_pairs:
                     continue
                 seen_pairs.add(pair_key)
 
-                # Compute MinHash similarity
                 minhash_sim = MinHasher.estimate_similarity(
                     signatures[idx], signatures[candidate_idx]
                 )
 
-                if minhash_sim < self.similarity_threshold * 0.8:  # Early pruning
+                if minhash_sim < self.similarity_threshold * 0.8:
                     continue
 
-                # Detailed similarity verification
                 detailed_sim, matching_cols, differing_cols = self._compute_detailed_similarity(
                     df.iloc[idx], df.iloc[candidate_idx], columns
                 )
@@ -336,7 +333,6 @@ class NearDuplicateDetectionComponent(ReportComponent):
                         detection_method="minhash_lsh"
                     ))
 
-        # Sort by similarity descending
         pairs.sort(key=lambda p: p.similarity, reverse=True)
         return pairs
 
@@ -425,20 +421,14 @@ class NearDuplicateDetectionComponent(ReportComponent):
         pairs: List[NearDuplicatePair],
         n_rows: int
     ) -> List[NearDuplicateCluster]:
-        """
-        Cluster near-duplicate records using Union-Find.
-
-        Groups records that are transitively connected through near-duplicate
-        relationships.
-        """
-        # Union-Find data structure
         parent = list(range(n_rows))
         rank = [0] * n_rows
 
         def find(x: int) -> int:
-            if parent[x] != x:
-                parent[x] = find(parent[x])
-            return parent[x]
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
 
         def union(x: int, y: int):
             px, py = find(x), find(y)
@@ -450,44 +440,39 @@ class NearDuplicateDetectionComponent(ReportComponent):
             if rank[px] == rank[py]:
                 rank[px] += 1
 
-        # Build clusters from pairs
         for pair in pairs:
             union(pair.index_a, pair.index_b)
 
-        # Group by cluster
-        cluster_members: Dict[int, List[int]] = defaultdict(list)
-        for idx in range(n_rows):
-            root = find(idx)
-            # Only include indices that are actually in some pair
-            for pair in pairs:
-                if pair.index_a == idx or pair.index_b == idx:
-                    cluster_members[root].append(idx)
-                    break
+        affected = set()
+        for pair in pairs:
+            affected.add(pair.index_a)
+            affected.add(pair.index_b)
 
-        # Build cluster objects
+        cluster_members: Dict[int, List[int]] = defaultdict(list)
+        for idx in affected:
+            cluster_members[find(idx)].append(idx)
+
+        cluster_sims: Dict[int, List[float]] = defaultdict(list)
+        for pair in pairs:
+            root = find(pair.index_a)
+            cluster_sims[root].append(pair.similarity)
+
         clusters = []
         for root, members in cluster_members.items():
             if len(members) < 2:
                 continue
 
-            members = list(set(members))  # Remove duplicates
-
-            # Compute average internal similarity
-            internal_sims = []
-            for pair in pairs:
-                if pair.index_a in members and pair.index_b in members:
-                    internal_sims.append(pair.similarity)
-
-            avg_sim = np.mean(internal_sims) if internal_sims else 0.0
+            members = sorted(set(members))
+            sims = cluster_sims.get(root, [])
+            avg_sim = float(np.mean(sims)) if sims else 0.0
 
             clusters.append(NearDuplicateCluster(
-                indices=sorted(members),
-                centroid_index=members[0],  # Could be improved with actual centroid computation
+                indices=members,
+                centroid_index=members[0],
                 avg_internal_similarity=round(avg_sim, 4),
                 size=len(members)
             ))
 
-        # Sort by size descending
         clusters.sort(key=lambda c: c.size, reverse=True)
         return clusters
 

@@ -1,4 +1,5 @@
 import re
+import time
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -10,7 +11,8 @@ import pandas as pd
 from report_components.base_component import ReportComponent, AnalysisContext
 from utils.consts import (
     NUM_EXAMPLES_LLM, RELATIONAL_FD_CONFIDENCE_THRESHOLD,
-    RELATIONAL_MAX_FD_DETERMINANT_SIZE, RELATIONAL_MAX_VIOLATIONS
+    RELATIONAL_MAX_FD_DETERMINANT_SIZE, RELATIONAL_MAX_VIOLATIONS,
+    RELATIONAL_MAX_FD_CANDIDATES, RELATIONAL_FD_TIMEOUT_SECONDS
 )
 
 
@@ -456,61 +458,104 @@ class RelationalConsistencyComponent(ReportComponent):
         self,
         df: pd.DataFrame
     ) -> Tuple[List[ConstraintViolation], List[FunctionalDependency]]:
-        """
-        Discover and validate functional dependencies using information theory.
-
-        A functional dependency X -> Y holds if X uniquely determines Y.
-        We detect approximate FDs where confidence >= threshold.
-        """
         violations = []
         fds = []
 
-        # Get candidate columns (non-high-cardinality)
         candidates = []
+        col_nunique = {}
         for col in df.columns:
             n_unique = df[col].nunique()
-            if n_unique < len(df) * 0.5 and n_unique > 1:  # Not unique, not constant
+            col_nunique[col] = n_unique
+            if n_unique < len(df) * 0.5 and n_unique > 1:
                 candidates.append(col)
 
         if len(candidates) < 2:
             return violations, fds
 
-        # Check single-column determinants
+        candidates.sort(key=lambda c: col_nunique[c])
+        candidates = candidates[:RELATIONAL_MAX_FD_CANDIDATES]
+
+        groupby_cache = {}
+        start_time = time.time()
+
         for det_col in candidates:
+            if time.time() - start_time > RELATIONAL_FD_TIMEOUT_SECONDS:
+                break
+
+            if det_col not in groupby_cache:
+                try:
+                    groupby_cache[det_col] = df.groupby(det_col, dropna=False)
+                except Exception:
+                    continue
+
+            grouped_obj = groupby_cache[det_col]
+
             for dep_col in candidates:
                 if det_col == dep_col:
                     continue
+                if col_nunique[det_col] > col_nunique[dep_col]:
+                    continue
 
-                fd = self._check_functional_dependency(df, [det_col], dep_col)
-                if fd and fd.confidence >= self.fd_confidence_threshold:
+                try:
+                    nunique_per_group = grouped_obj[dep_col].nunique()
+                except Exception:
+                    continue
+
+                violations_count = int((nunique_per_group > 1).sum())
+                total_groups = len(nunique_per_group)
+                if total_groups == 0:
+                    continue
+
+                confidence = 1 - (violations_count / total_groups)
+
+                if confidence >= self.fd_confidence_threshold:
+                    fd = FunctionalDependency(
+                        determinant=[det_col],
+                        dependent=dep_col,
+                        confidence=confidence,
+                        violation_count=violations_count,
+                        is_approximate=confidence < 1.0
+                    )
                     fds.append(fd)
 
-                    if fd.violation_count > 0:
+                    if violations_count > 0:
+                        examples = self._get_fd_violation_examples_from_grouped(
+                            grouped_obj, dep_col
+                        )
                         violations.append(ConstraintViolation(
                             constraint_type=ConstraintType.FUNCTIONAL_DEPENDENCY,
-                            description=f"Approximate FD: {det_col} -> {dep_col} has {fd.violation_count} violations",
+                            description=f"Approximate FD: {det_col} -> {dep_col} has {violations_count} violations",
                             affected_columns=[det_col, dep_col],
-                            violation_count=fd.violation_count,
-                            violation_ratio=1 - fd.confidence,
-                            severity=ViolationSeverity.LOW if fd.confidence > 0.99 else ViolationSeverity.MEDIUM,
-                            example_violations=self._get_fd_violation_examples(df, [det_col], dep_col),
+                            violation_count=violations_count,
+                            violation_ratio=1 - confidence,
+                            severity=ViolationSeverity.LOW if confidence > 0.99 else ViolationSeverity.MEDIUM,
+                            example_violations=examples,
                             row_indices=[],
                             recommendation=f"Investigate inconsistent mappings from '{det_col}' to '{dep_col}'"
                         ))
 
-        # Check two-column determinants if enabled
-        if self.max_fd_determinant_size >= 2 and len(candidates) >= 3:
+        if (self.max_fd_determinant_size >= 2 and len(candidates) >= 3
+                and time.time() - start_time < RELATIONAL_FD_TIMEOUT_SECONDS):
             from itertools import combinations
 
-            for det_cols in combinations(candidates, 2):
+            max_2col_candidates = min(len(candidates), 10)
+            top_candidates = candidates[:max_2col_candidates]
+
+            for det_cols in combinations(top_candidates, 2):
+                if time.time() - start_time > RELATIONAL_FD_TIMEOUT_SECONDS:
+                    break
+
                 det_list = list(det_cols)
+                combined_nunique = col_nunique[det_list[0]] * col_nunique[det_list[1]]
+
                 for dep_col in candidates:
                     if dep_col in det_list:
+                        continue
+                    if combined_nunique > col_nunique[dep_col] * 2:
                         continue
 
                     fd = self._check_functional_dependency(df, det_list, dep_col)
                     if fd and fd.confidence >= self.fd_confidence_threshold:
-                        # Only add if not subsumed by single-column FD
                         is_subsumed = any(
                             set(existing.determinant) < set(det_list) and existing.dependent == dep_col
                             for existing in fds
@@ -519,6 +564,25 @@ class RelationalConsistencyComponent(ReportComponent):
                             fds.append(fd)
 
         return violations, fds
+
+    def _get_fd_violation_examples_from_grouped(
+        self,
+        grouped_obj,
+        dependent: str
+    ) -> List[Dict[str, Any]]:
+        examples = []
+        try:
+            for name, group in grouped_obj[dependent]:
+                if group.nunique() > 1:
+                    examples.append({
+                        "determinant_value": [name] if not isinstance(name, tuple) else list(name),
+                        "dependent_values": group.unique().tolist()[:5]
+                    })
+                    if len(examples) >= 3:
+                        break
+        except Exception:
+            pass
+        return examples
 
     def _check_functional_dependency(
         self,

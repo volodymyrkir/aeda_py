@@ -11,7 +11,8 @@ from sklearn.impute import SimpleImputer
 from report_components.base_component import ReportComponent, AnalysisContext
 from utils.consts import (
     NUM_EXAMPLES_LLM, OUTLIER_N_ESTIMATORS, OUTLIER_CONTAMINATION,
-    OUTLIER_CARDINALITY_THRESHOLD, OUTLIER_MIN_UNIQUE_FOR_ID, OUTLIER_MAX_EXPLAIN_FEATURES
+    OUTLIER_CARDINALITY_THRESHOLD, OUTLIER_MIN_UNIQUE_FOR_ID, OUTLIER_MAX_EXPLAIN_FEATURES,
+    OUTLIER_SHAP_MAX_SAMPLES, OUTLIER_MAX_EXPLAIN_ROWS
 )
 
 
@@ -97,9 +98,14 @@ class OutlierDetectionComponent(ReportComponent):
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
+        n_est = self.n_estimators
+        if len(X) > 50000:
+            n_est = min(self.n_estimators, 100)
+
         model = IsolationForest(
-            n_estimators=self.n_estimators,
+            n_estimators=n_est,
             contamination=self.contamination,
+            max_samples=min(len(X), 10000),
             random_state=self.random_state
         )
         model.fit(X_scaled)
@@ -185,24 +191,31 @@ class OutlierDetectionComponent(ReportComponent):
         outlier_indices = np.where(mask)[0]
         explanations = []
 
+        sorted_outlier_indices = outlier_indices[np.argsort(scores[outlier_indices])[::-1]]
+        explain_indices = sorted_outlier_indices[:OUTLIER_MAX_EXPLAIN_ROWS]
+
         shap_values = None
         use_shap_for_explanation = self.use_shap
+        shap_index_map = {}
 
-        if self.use_shap and len(outlier_indices) > 0:
+        if self.use_shap and len(explain_indices) > 0:
             try:
+                shap_subset = explain_indices[:OUTLIER_SHAP_MAX_SAMPLES]
                 explainer = shap.TreeExplainer(model)
-                shap_values = explainer.shap_values(X_scaled[outlier_indices])
+                shap_values = explainer.shap_values(X_scaled[shap_subset])
                 if shap_values.ndim == 3:
                     shap_values = np.mean(shap_values, axis=0)
+                for i, idx in enumerate(shap_subset):
+                    shap_index_map[idx] = i
             except (IndexError, ValueError, Exception):
                 use_shap_for_explanation = False
                 shap_values = None
 
         mean_vector = np.mean(X_scaled, axis=0)
 
-        for i, idx in enumerate(outlier_indices):
-            if use_shap_for_explanation and shap_values is not None:
-                deviation = np.abs(shap_values[i])
+        for idx in explain_indices:
+            if use_shap_for_explanation and shap_values is not None and idx in shap_index_map:
+                deviation = np.abs(shap_values[shap_index_map[idx]])
             else:
                 deviation = np.abs(X_scaled[idx] - mean_vector)
 
@@ -222,7 +235,7 @@ class OutlierDetectionComponent(ReportComponent):
                 "explanation_narrative": narrative
             }
 
-            if i < NUM_EXAMPLES_LLM and self.llm:
+            if len(explanations) < NUM_EXAMPLES_LLM and self.llm:
                 try:
                     row_data = df.iloc[idx].to_dict()
                     llm_explanation = self.llm.explain_outlier(

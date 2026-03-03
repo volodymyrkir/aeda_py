@@ -76,7 +76,8 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
                 adaptive_min = max(0.001, 5 / len(non_null))
                 threshold = min(threshold, adaptive_min)
 
-            rare_mask = df[col].isin(freq[freq < threshold].index)
+            rare_values = freq[freq < threshold].index
+            rare_mask = df[col].isin(rare_values)
             outlier_masks[col] = rare_mask
 
             if self.use_chi_square and len(cat_cols) > 1:
@@ -92,10 +93,11 @@ class CategoricalOutlierDetectionComponent(ReportComponent):
                                     "note": "Unexpected distribution interaction"
                                 })
 
+            rare_non_null = non_null[non_null.isin(rare_values)]
             rare_df = pd.DataFrame({
-                "index": non_null[non_null.isin(freq[freq < threshold].index)].index,
-                "value": non_null[non_null.isin(freq[freq < threshold].index)],
-                "frequency": non_null[non_null.isin(freq[freq < threshold].index)].map(freq)
+                "index": rare_non_null.index,
+                "value": rare_non_null.values,
+                "frequency": rare_non_null.map(freq).values
             }).sort_values("frequency").head(self.max_explanations_per_col)
 
             for _, row in rare_df.iterrows():

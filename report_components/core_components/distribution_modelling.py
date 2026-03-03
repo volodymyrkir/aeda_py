@@ -14,7 +14,7 @@ from utils.consts import (
     NUM_EXAMPLES_LLM, DISTRIBUTION_EPOCHS, DISTRIBUTION_BATCH_SIZE, DISTRIBUTION_LEARNING_RATE,
     DISTRIBUTION_HIDDEN_FACTORS, DISTRIBUTION_EARLY_STOP_PATIENCE, DISTRIBUTION_VALIDATION_SPLIT,
     DISTRIBUTION_THRESHOLD_PERCENTILE, OUTLIER_CARDINALITY_THRESHOLD,
-    OUTLIER_MIN_UNIQUE_FOR_ID
+    OUTLIER_MIN_UNIQUE_FOR_ID, LARGE_DATASET_ROW_THRESHOLD
 )
 
 
@@ -120,25 +120,31 @@ class DistributionModelingComponent(ReportComponent):
 
         X = df[numeric_cols].copy()
 
-        # Impute missing values
         if self.impute_missing:
             imputer = SimpleImputer(strategy="mean")
             X = pd.DataFrame(imputer.fit_transform(X), columns=numeric_cols)
         else:
-            X = X.dropna()  # Fallback, but loses rows
+            X = X.dropna()
 
         if len(X) < 10:
             self.result = self._empty_result("Too few complete rows after handling missing values")
             return
 
-        # Store feature means for LLM explanations (before scaling)
+        train_X = X
+        if len(X) > LARGE_DATASET_ROW_THRESHOLD:
+            rng = np.random.RandomState(42)
+            sample_idx = rng.choice(len(X), size=LARGE_DATASET_ROW_THRESHOLD, replace=False)
+            train_X = X.iloc[sample_idx].reset_index(drop=True)
+
         self.feature_means = {col: float(X[col].mean()) for col in numeric_cols}
 
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+        scaler.fit(train_X)
+        X_scaled_train = scaler.transform(train_X)
+        X_scaled_all = scaler.transform(X)
 
-        X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
-        dataset = TensorDataset(X_tensor)
+        X_tensor_train = torch.tensor(X_scaled_train, dtype=torch.float32)
+        dataset = TensorDataset(X_tensor_train)
         val_size = int(len(dataset) * self.validation_split)
         train_size = len(dataset) - val_size
         train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
@@ -146,7 +152,7 @@ class DistributionModelingComponent(ReportComponent):
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size)
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = Autoencoder(input_dim=X_tensor.shape[1], hidden_factors=self.hidden_factors).to(device)
+        model = Autoencoder(input_dim=X_tensor_train.shape[1], hidden_factors=self.hidden_factors).to(device)
         optimizer = optim.Adam(model.parameters(), lr=self.learning_rate)
         criterion = nn.MSELoss()
 
@@ -190,11 +196,18 @@ class DistributionModelingComponent(ReportComponent):
         # Full inference
         model.eval()
         with torch.no_grad():
-            X_tensor = X_tensor.to(device)
-            reconstructed = model(X_tensor)
-            per_feature_errors = (X_tensor - reconstructed) ** 2  # Shape: (n_rows, n_features)
-            reconstruction_error = torch.mean(per_feature_errors, dim=1).cpu().numpy()  # Row-wise mean
-            per_feature_errors = per_feature_errors.cpu().numpy()  # For explanations
+            chunk_size = 10000
+            all_errors = []
+            all_per_feature = []
+            for start in range(0, len(X_scaled_all), chunk_size):
+                end = min(start + chunk_size, len(X_scaled_all))
+                chunk = torch.tensor(X_scaled_all[start:end], dtype=torch.float32).to(device)
+                recon = model(chunk)
+                pfe = (chunk - recon) ** 2
+                all_errors.append(torch.mean(pfe, dim=1).cpu().numpy())
+                all_per_feature.append(pfe.cpu().numpy())
+            reconstruction_error = np.concatenate(all_errors)
+            per_feature_errors = np.concatenate(all_per_feature)
 
         reconstruction_error = np.nan_to_num(reconstruction_error, nan=0.0)  # Safety
         threshold = np.percentile(reconstruction_error, self.threshold_percentile)

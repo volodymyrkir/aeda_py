@@ -132,7 +132,6 @@ class CompositeQualityScoreComponent(ReportComponent):
         return float(entropy(pattern_counts))
 
     def _compute_statistical_features(self, df) -> Dict[str, float]:
-        """Compute statistical meta-features."""
         numeric_df = df.select_dtypes(include=[np.number]).dropna()
 
         if numeric_df.shape[1] == 0:
@@ -142,6 +141,10 @@ class CompositeQualityScoreComponent(ReportComponent):
                 "outlier_ratio": 0.0,
                 "feature_variance_cv": 0.0
             }
+
+        sample_size = min(10000, len(numeric_df))
+        if sample_size < len(numeric_df):
+            numeric_df = numeric_df.sample(n=sample_size, random_state=42)
 
         # Skewness and kurtosis
         skewness = numeric_df.skew()
@@ -178,7 +181,9 @@ class CompositeQualityScoreComponent(ReportComponent):
                 "redundancy_ratio": 0.0
             }
 
-        # Discretize for entropy calculation
+        if len(numeric_df) > 10000:
+            numeric_df = numeric_df.sample(n=10000, random_state=42)
+
         n_bins = min(10, len(numeric_df) // 10)
         n_bins = max(n_bins, 2)
 
@@ -194,12 +199,11 @@ class CompositeQualityScoreComponent(ReportComponent):
 
         mean_entropy = np.mean(entropies) if entropies else 0.0
 
-        # Correlation-based redundancy
         if numeric_df.shape[1] > 1:
             corr_matrix = numeric_df.corr().abs().values
             upper_tri = corr_matrix[np.triu_indices_from(corr_matrix, k=1)]
             redundancy = np.mean(upper_tri > 0.9) if len(upper_tri) > 0 else 0.0
-            mean_mi = np.mean(upper_tri)  # Proxy for mutual information
+            mean_mi = np.mean(upper_tri)
         else:
             redundancy = 0.0
             mean_mi = 0.0
@@ -228,7 +232,10 @@ class CompositeQualityScoreComponent(ReportComponent):
                 pass
 
         if numeric_df.shape[1] > 1:
-            corr_values = numeric_df.corr().abs().values
+            corr_df = numeric_df
+            if len(corr_df) > 5000:
+                corr_df = corr_df.sample(n=5000, random_state=42)
+            corr_values = corr_df.corr().abs().values
             upper_tri = corr_values[np.triu_indices_from(corr_values, k=1)]
             corr_mean = np.mean(upper_tri) if len(upper_tri) > 0 else 0.0
             corr_std = np.std(upper_tri) if len(upper_tri) > 0 else 0.0
@@ -274,7 +281,6 @@ class CompositeQualityScoreComponent(ReportComponent):
         }
 
     def _compute_complexity_features(self, df) -> Dict[str, float]:
-        """Compute dataset complexity features."""
         numeric_df = df.select_dtypes(include=[np.number]).dropna()
 
         if numeric_df.shape[1] < 2 or len(numeric_df) < 10:
@@ -284,21 +290,21 @@ class CompositeQualityScoreComponent(ReportComponent):
             }
 
         try:
-            # PCA-based intrinsic dimensionality
             from sklearn.decomposition import PCA
 
-            # Normalize
+            sample_size = min(5000, len(numeric_df))
+            if sample_size < len(numeric_df):
+                numeric_df = numeric_df.sample(n=sample_size, random_state=42)
+
             normalized = (numeric_df - numeric_df.mean()) / (numeric_df.std() + 1e-10)
 
             pca = PCA(random_state=42)
             pca.fit(normalized)
 
-            # Intrinsic dimensionality: number of components for 95% variance
             cumsum = np.cumsum(pca.explained_variance_ratio_)
             intrinsic_dim = np.searchsorted(cumsum, 0.95) + 1
             intrinsic_ratio = intrinsic_dim / numeric_df.shape[1]
 
-            # Feature noise: variance not explained by top components
             noise_ratio = 1.0 - cumsum[min(5, len(cumsum) - 1)]
 
         except Exception:
